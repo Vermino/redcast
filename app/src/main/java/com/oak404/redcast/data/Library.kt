@@ -31,6 +31,14 @@ class Library(context: Context) {
         get() = prefs.getBoolean(KEY_AGE, false)
         set(value) = prefs.edit().putBoolean(KEY_AGE, value).apply()
 
+    var lastUpdateCheckMs: Long
+        get() = prefs.getLong(KEY_UPDATE_CHECK, 0L)
+        set(value) = prefs.edit().putLong(KEY_UPDATE_CHECK, value).apply()
+
+    var skippedVersion: String?
+        get() = prefs.getString(KEY_SKIPPED_VERSION, null)
+        set(value) = prefs.edit().putString(KEY_SKIPPED_VERSION, value).apply()
+
     var swipeHintSeen: Boolean
         get() = prefs.getBoolean(KEY_SWIPE_HINT, false)
         set(value) = prefs.edit().putBoolean(KEY_SWIPE_HINT, value).apply()
@@ -130,6 +138,8 @@ class Library(context: Context) {
         const val KEY_SEARCHES = "searches"
         const val KEY_AGE = "age_confirmed"
         const val KEY_SWIPE_HINT = "swipe_hint_seen"
+        const val KEY_UPDATE_CHECK = "update_check_ms"
+        const val KEY_SKIPPED_VERSION = "skipped_version"
         const val MAX_HISTORY = 300
         const val MAX_SEARCHES = 20
     }

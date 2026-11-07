@@ -17,6 +17,7 @@ import com.oak404.redcast.cast.CastRelay
 import com.oak404.redcast.data.Feeds
 import com.oak404.redcast.data.Library
 import com.oak404.redcast.data.RedgifsApi
+import com.oak404.redcast.data.Updates
 import kotlinx.coroutines.MainScope
 import okhttp3.OkHttpClient
 import java.io.File
@@ -31,6 +32,7 @@ class RedcastApp : Application() {
     val api by lazy { RedgifsApi(session, http) }
     val library by lazy { Library(this) }
     val feeds by lazy { Feeds(api, library) }
+    val updates by lazy { Updates(http) }
     val cast by lazy { CastController(this, scope, CastRelay(http)) }
 
     @get:OptIn(UnstableApi::class)

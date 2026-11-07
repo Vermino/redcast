@@ -2,6 +2,10 @@ package com.oak404.redcast.ui
 
 import android.app.Application
 import android.content.Context
+import android.content.Intent
+import android.os.Build
+import android.provider.Settings as AndroidSettings
+import androidx.core.content.FileProvider
 import android.net.ConnectivityManager
 import android.net.Uri
 import androidx.compose.runtime.getValue
@@ -16,6 +20,8 @@ import com.oak404.redcast.data.Feed
 import com.oak404.redcast.data.FeedSource
 import com.oak404.redcast.data.Gif
 import com.oak404.redcast.data.Profile
+import com.oak404.redcast.data.Release
+import com.oak404.redcast.data.isNewer
 import com.oak404.redcast.data.Settings
 import com.oak404.redcast.data.Signal
 import com.oak404.redcast.data.Suggestion
@@ -67,6 +73,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     var tab by mutableStateOf(defaultTab)
     var ageConfirmed by mutableStateOf(library.ageConfirmed)
         private set
+
+    /** A newer release to offer, and its download progress once the person says yes. */
+    var update by mutableStateOf<Release?>(null)
+        private set
+    var updateProgress by mutableStateOf<Float?>(null)
+        private set
     var autoscroll by mutableStateOf(true)
 
     /** Set when the sleep timer runs out; the phone player stays paused until it clears. */
@@ -106,6 +118,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var suggestJob: Job? = null
 
     init {
+        checkForUpdates(manual = false)
         viewModelScope.launch {
             if (session.signedIn.value) refreshAccount()
             session.signedIn.drop(1).collect { signedIn ->
@@ -193,6 +206,74 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun openSavedList(name: String) = openListing(FeedSource.SavedList(name))
 
     fun openHistory() = openListing(FeedSource.History)
+
+    /** On launch at most every few hours (if allowed), or whenever the person asks. */
+    fun checkForUpdates(manual: Boolean) {
+        val now = System.currentTimeMillis()
+        if (!manual && (!library.settings.value.checkForUpdates || now - library.lastUpdateCheckMs < UPDATE_CHECK_EVERY_MS)) {
+            return
+        }
+        viewModelScope.launch {
+            try {
+                val release = app.updates.latest()
+                library.lastUpdateCheckMs = now
+                val newer = release != null && isNewer(release.version, installedVersion())
+                when {
+                    newer && (manual || release.version != library.skippedVersion) -> update = release
+                    manual -> _message.value = "Redcast is up to date"
+                }
+            } catch (e: IOException) {
+                if (manual) _message.value = e.message
+            }
+        }
+    }
+
+    fun dismissUpdate() {
+        update = null
+    }
+
+    fun skipUpdate() {
+        library.skippedVersion = update?.version
+        update = null
+    }
+
+    /** Downloads the release and hands it to Android's installer, which asks the person to confirm. */
+    fun installUpdate() {
+        val release = update ?: return
+        val context = getApplication<Application>()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !context.packageManager.canRequestPackageInstalls()) {
+            _message.value = "Allow Redcast to install updates, then tap Update again"
+            context.startActivity(
+                Intent(AndroidSettings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${context.packageName}"))
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            )
+            return
+        }
+        updateProgress = 0f
+        viewModelScope.launch {
+            try {
+                val file = app.updates.download(release, java.io.File(context.cacheDir, "updates")) {
+                    viewModelScope.launch { updateProgress = it }
+                }
+                val uri = FileProvider.getUriForFile(context, "${context.packageName}.updates", file)
+                context.startActivity(
+                    Intent(Intent.ACTION_VIEW)
+                        .setDataAndType(uri, "application/vnd.android.package-archive")
+                        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK),
+                )
+                update = null
+            } catch (e: IOException) {
+                _message.value = e.message
+            } finally {
+                updateProgress = null
+            }
+        }
+    }
+
+    private fun installedVersion(): String {
+        val context = getApplication<Application>()
+        return context.packageManager.getPackageInfo(context.packageName, 0).versionName.orEmpty()
+    }
 
     fun openSettings() {
         backStack += Route.Settings
@@ -413,6 +494,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private companion object {
         const val KEPT_LIST = "Kept"
+        const val UPDATE_CHECK_EVERY_MS = 12 * 60 * 60 * 1000L
         const val CREATOR_ORDER = "latest"
         const val MAX_FOLLOWING_PAGES = 10
         const val SEED_LIKES = 80

@@ -121,4 +121,5 @@ private fun Root(viewModel: MainViewModel, appLock: AppLock) {
         is Route.Player -> PlayerScreen(viewModel, route.feed, route.startIndex)
         Route.Settings -> SettingsScreen(viewModel, appLock)
     }
+    UpdateDialog(viewModel)
 }

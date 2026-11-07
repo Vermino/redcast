@@ -106,7 +106,7 @@ fun SettingsScreen(viewModel: MainViewModel, appLock: AppLock) {
                 }
                 Toggle(
                     "Swipe to curate",
-                    "Right keeps a clip, left passes on it",
+                    "Right keeps a clip and stays on it, left passes and moves on",
                     settings.swipeToCurate,
                 ) { on -> viewModel.updateSettings { it.copy(swipeToCurate = on) } }
                 Toggle(
@@ -153,6 +153,12 @@ fun SettingsScreen(viewModel: MainViewModel, appLock: AppLock) {
             Section("About") {
                 val version = context.packageManager.getPackageInfo(context.packageName, 0).versionName
                 Row("Redcast $version", "Unofficial and open source. Not affiliated with RedGIFs.")
+                Row("Check for updates", "From the releases on GitHub") { viewModel.checkForUpdates(manual = true) }
+                Toggle(
+                    "Check automatically",
+                    "Look for a new version when Redcast opens. You choose whether to install it.",
+                    settings.checkForUpdates,
+                ) { on -> viewModel.updateSettings { it.copy(checkForUpdates = on) } }
                 if (Links.SUPPORT.isNotEmpty()) {
                     Link("Support Redcast", "Help keep it going") { open(Links.SUPPORT) }
                 }

@@ -244,12 +244,13 @@ fun PlayerScreen(viewModel: MainViewModel, feed: Feed, startIndex: Int) {
             if (pager.currentPage + 1 < gifs.size) pager.animateScrollToPage(pager.currentPage + 1)
         }
     }
-    val judge: (Gif, (Gif) -> Unit) -> Unit = { gif, verdict ->
+    var keptFlash by remember { mutableIntStateOf(0) }
+    val judge: (Gif, Boolean, (Gif) -> Unit) -> Unit = { gif, moveOn, verdict ->
         judged += gif.id
         verdict(gif)
         swipeHint = false
         viewModel.library.swipeHintSeen = true
-        goToNext()
+        if (moveOn) goToNext()
     }
 
     val drop: () -> Unit = {
@@ -281,8 +282,12 @@ fun PlayerScreen(viewModel: MainViewModel, feed: Feed, startIndex: Int) {
                     if (signedIn && gif.id !in likedIds) viewModel.toggleLike(gif, feed, page)
                 },
                 swipeEnabled = swipeEnabled,
-                onKeep = { judge(gif) { viewModel.keep(it, feed, page) } },
-                onPass = { judge(gif, viewModel::pass) },
+                // Keeping stays on the clip; passing moves on.
+                onKeep = {
+                    judge(gif, false) { viewModel.keep(it, feed, page) }
+                    keptFlash++
+                },
+                onPass = { judge(gif, true, viewModel::pass) },
                 onHold = { at ->
                     sorting = gif
                     finger = at
@@ -311,6 +316,27 @@ fun PlayerScreen(viewModel: MainViewModel, feed: Feed, startIndex: Int) {
                 CastButton(viewModel, onDark = true)
             }
             Box(Modifier.weight(1f).fillMaxWidth()) {
+                if (keptFlash > 0) {
+                    var visible by remember { mutableStateOf(false) }
+                    LaunchedEffect(keptFlash) {
+                        visible = true
+                        delay(KEPT_FLASH_MS)
+                        visible = false
+                    }
+                    if (visible) {
+                        Row(
+                            Modifier
+                                .align(Alignment.Center)
+                                .background(Color(0xCC000000), RoundedCornerShape(20.dp))
+                                .padding(horizontal = 16.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(Icons.Default.Favorite, contentDescription = null, tint = Color(0xFF4CAF7A))
+                            Spacer(Modifier.width(8.dp))
+                            Text("Kept", color = Color.White, style = MaterialTheme.typography.titleMedium)
+                        }
+                    }
+                }
                 if (swipeHint && swipeEnabled) {
                     Text(
                         "Swipe right to keep, left to pass. Hold to sort into a list.",
@@ -609,9 +635,14 @@ private fun GifPage(
                                     offset.animateTo(0f)
                                     return@launch
                                 }
-                                offset.animateTo(if (verdict > 0) size.width * 1.5f else size.width * -1.5f)
-                                if (verdict > 0) keep() else pass()
-                                offset.snapTo(0f)
+                                if (verdict > 0) {
+                                    offset.animateTo(0f)
+                                    keep()
+                                } else {
+                                    offset.animateTo(size.width * -1.5f)
+                                    pass()
+                                    offset.snapTo(0f)
+                                }
                             }
                         }
                         !decided -> {
@@ -698,6 +729,7 @@ private fun mediaItem(gif: Gif, url: String): MediaItem =
 private const val LOAD_AHEAD = 6
 private const val SWIPE_FRACTION = 0.3f
 private const val MAX_TILT_DEGREES = 12f
+private const val KEPT_FLASH_MS = 1_200L
 private val SORT_BUBBLE = 92.dp
 private val SORT_THUMB = 72.dp
 private val SORT_REACH = 56.dp

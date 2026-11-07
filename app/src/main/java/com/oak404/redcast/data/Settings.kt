@@ -33,6 +33,7 @@ data class Settings(
     val showPromoted: Boolean = true,
     val swipeToCurate: Boolean = true,
     val listDiscovery: Boolean = true,
+    val checkForUpdates: Boolean = true,
 ) {
     fun toJson(): JSONObject = JSONObject()
         .put("theme", theme.name)
@@ -43,6 +44,7 @@ data class Settings(
         .put("showPromoted", showPromoted)
         .put("swipeToCurate", swipeToCurate)
         .put("listDiscovery", listDiscovery)
+        .put("checkForUpdates", checkForUpdates)
 }
 
 internal fun settingsFrom(json: JSONObject): Settings {
@@ -56,6 +58,7 @@ internal fun settingsFrom(json: JSONObject): Settings {
         showPromoted = json.optBoolean("showPromoted", defaults.showPromoted),
         swipeToCurate = json.optBoolean("swipeToCurate", defaults.swipeToCurate),
         listDiscovery = json.optBoolean("listDiscovery", defaults.listDiscovery),
+        checkForUpdates = json.optBoolean("checkForUpdates", defaults.checkForUpdates),
     )
 }
 

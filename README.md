@@ -12,7 +12,7 @@ working at any time.
 - **Sign in** with your own RedGIFs account, or browse as a guest
 - **Chromecast** with a continuous queue: clips play one after another, and the phone can be locked
 - **Autoscroll** to the next clip, or loop the current one
-- **Swipe to curate:** right keeps a clip, left passes on it, and both teach My Mix
+- **Swipe to curate:** right keeps a clip and keeps playing it, left passes and moves on; both teach My Mix
 - **My Mix:** a feed ranked on your phone from what you like, finish, skip and pin
 - **Feeds:** Trending, Explore, For You, Liked, Following, creator pages and tag pages
 - **Saved lists**, watch history and search history
@@ -20,6 +20,8 @@ working at any time.
 - **Layouts:** grid, staggered grid (2 to 4 columns), or a list that plays in place
 - **Themes:** System, Light, Dark, AMOLED, Midnight, Sunset and Forest
 - **Video quality:** Auto, HD or SD
+- **Hold to sort** a clip into a collection, and collections that carry on into more like them
+- **Updates:** checks GitHub releases and offers new versions; you choose whether to install
 - **App lock**, sleep timer, and JSON export of your data
 
 History, lists and taste stay on your phone unless you export them.
@@ -32,6 +34,18 @@ History, lists and taste stay on your phone unless you export them.
 
 Needs JDK 17 and Android SDK platform 37. The APK lands in `app/build/outputs/apk/release/`. It is
 signed with the local debug key, so builds from different machines won't install over each other.
+
+## Releasing
+
+Bump `versionCode` and `versionName` in `app/build.gradle.kts`, commit, then:
+
+```bash
+scripts/release.sh "What changed"
+```
+
+It builds and tests the APK, tags the commit, and publishes a GitHub release with the APK attached.
+Installed copies find it through the releases API and offer it as an update. Android only installs
+an update signed with the same key, so every release has to come from the same signing key.
 
 ## How it works
 
