@@ -87,6 +87,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     /** Where the phone player is, so a new Cast session can pick up from the same clip. */
     private var playerPosition: Pair<Feed, Int>? = null
+    // Unlikes made while the Liked feed is playing; taking them out then would shift the player.
+    private val unlikedWhilePlaying = HashSet<String>()
     private var sleepJob: Job? = null
 
     private val trending = feeds.create(FeedSource.Trending)
@@ -346,6 +348,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun onPlayerClosed() {
         playerPosition = null
+        liked.remove(unlikedWhilePlaying.toSet())
+        unlikedWhilePlaying.clear()
     }
 
     fun onClipSeen(gif: Gif) {
@@ -420,13 +424,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val wasLiked = gif.id in _likedIds.value
         _likedIds.value = if (wasLiked) _likedIds.value - gif.id else _likedIds.value + gif.id
         if (!wasLiked) library.updateTaste { it.record(gif, Signal.Liked) }
+        showInLiked(gif, liked = !wasLiked)
         viewModelScope.launch {
             try {
                 api.setLiked(gif.id, !wasLiked, from?.source, index + 1)
             } catch (e: IOException) {
                 _likedIds.value = if (wasLiked) _likedIds.value + gif.id else _likedIds.value - gif.id
+                showInLiked(gif, liked = wasLiked)
                 _message.value = e.message
             }
+        }
+    }
+
+    /** The Liked feed is loaded once, so likes made here go into it directly. */
+    private fun showInLiked(gif: Gif, liked: Boolean) {
+        val playingLiked = playerPosition?.first === this.liked
+        when {
+            liked -> {
+                unlikedWhilePlaying -= gif.id
+                if (!playingLiked) this.liked.prepend(gif)
+            }
+            playingLiked -> unlikedWhilePlaying += gif.id
+            else -> this.liked.remove(setOf(gif.id))
         }
     }
 

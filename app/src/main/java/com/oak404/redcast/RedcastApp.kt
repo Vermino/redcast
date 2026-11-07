@@ -9,6 +9,7 @@ import androidx.media3.datasource.cache.CacheDataSource
 import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor
 import androidx.media3.datasource.cache.SimpleCache
 import androidx.media3.datasource.okhttp.OkHttpDataSource
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import com.oak404.redcast.auth.Session
@@ -49,13 +50,22 @@ class RedcastApp : Application() {
         val dataSource = CacheDataSource.Factory()
             .setCache(videoCache)
             .setUpstreamDataSourceFactory(OkHttpDataSource.Factory(http))
+        // Clips are short, so start as soon as a second is buffered instead of the default 2.5.
+        val loadControl = DefaultLoadControl.Builder()
+            .setBufferDurationsMs(MIN_BUFFER_MS, MAX_BUFFER_MS, START_BUFFER_MS, REBUFFER_MS)
+            .build()
         return ExoPlayer.Builder(this)
             .setMediaSourceFactory(DefaultMediaSourceFactory(dataSource))
+            .setLoadControl(loadControl)
             .build()
     }
 
     companion object {
         private const val VIDEO_CACHE_BYTES = 300L * 1024 * 1024
+        private const val MIN_BUFFER_MS = 15_000
+        private const val MAX_BUFFER_MS = 30_000
+        private const val START_BUFFER_MS = 1_000
+        private const val REBUFFER_MS = 2_000
 
         fun get(context: Context) = context.applicationContext as RedcastApp
     }

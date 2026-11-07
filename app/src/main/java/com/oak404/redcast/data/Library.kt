@@ -1,7 +1,14 @@
 package com.oak404.redcast.data
 
 import android.content.Context
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import org.json.JSONArray
@@ -11,6 +18,12 @@ import org.json.JSONObject
 class Library(context: Context) {
 
     private val prefs = context.applicationContext.getSharedPreferences("library", Context.MODE_PRIVATE)
+
+    // Every clip seen changes taste and history, and each save rewrites the whole prefs file, so
+    // saves run off the main thread and a burst of changes to one key becomes a single write.
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private val writer = CoroutineScope(SupervisorJob() + Dispatchers.IO.limitedParallelism(1))
+    private val pendingWrites = HashMap<String, Job>()
 
     private val _taste = MutableStateFlow(readTaste())
     val taste: StateFlow<Taste> = _taste.asStateFlow()
@@ -49,12 +62,12 @@ class Library(context: Context) {
 
     fun updateTaste(change: (Taste) -> Taste) {
         _taste.value = change(_taste.value)
-        prefs.edit().putString(KEY_TASTE, _taste.value.toJson().toString()).apply()
+        persist(KEY_TASTE) { _taste.value.toJson().toString() }
     }
 
     fun updateSettings(change: (Settings) -> Settings) {
         _settings.value = change(_settings.value)
-        prefs.edit().putString(KEY_SETTINGS, _settings.value.toJson().toString()).apply()
+        persist(KEY_SETTINGS) { _settings.value.toJson().toString() }
     }
 
     fun addToHistory(gif: Gif) = saveHistory(pushRecent(_history.value, gif, MAX_HISTORY) { a, b -> a.id == b.id })
@@ -75,12 +88,12 @@ class Library(context: Context) {
 
     private fun saveHistory(gifs: List<Gif>) {
         _history.value = gifs
-        prefs.edit().putString(KEY_HISTORY, gifsJson(gifs).toString()).apply()
+        persist(KEY_HISTORY) { gifsJson(_history.value).toString() }
     }
 
     private fun saveSearches(searches: List<String>) {
         _searches.value = searches
-        prefs.edit().putString(KEY_SEARCHES, JSONArray(searches).toString()).apply()
+        persist(KEY_SEARCHES) { JSONArray(_searches.value).toString() }
     }
 
     fun addToList(name: String, gif: Gif) {
@@ -95,7 +108,18 @@ class Library(context: Context) {
 
     private fun saveLists(lists: Map<String, List<Gif>>) {
         _lists.value = lists
-        prefs.edit().putString(KEY_LISTS, listsJson(lists).toString()).apply()
+        persist(KEY_LISTS) { listsJson(_lists.value).toString() }
+    }
+
+    /** Saves the latest value of [key] shortly after the last change to it. */
+    private fun persist(key: String, value: () -> String) {
+        synchronized(pendingWrites) {
+            pendingWrites[key]?.cancel()
+            pendingWrites[key] = writer.launch {
+                delay(WRITE_DELAY_MS)
+                prefs.edit().putString(key, value()).apply()
+            }
+        }
     }
 
     private fun listsJson(lists: Map<String, List<Gif>>) = JSONObject().also { json ->
@@ -142,6 +166,7 @@ class Library(context: Context) {
         const val KEY_SKIPPED_VERSION = "skipped_version"
         const val MAX_HISTORY = 300
         const val MAX_SEARCHES = 20
+        const val WRITE_DELAY_MS = 400L
     }
 }
 

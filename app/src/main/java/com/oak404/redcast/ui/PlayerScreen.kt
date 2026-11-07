@@ -596,6 +596,23 @@ private fun GifPage(
     var pageWidth by remember { mutableFloatStateOf(1f) }
     val swipe = offset.value / pageWidth
 
+    // The one player hops between pages and briefly shows whatever it last drew, so the video
+    // stays hidden behind this clip's poster until the player has drawn a frame of this clip.
+    var showingThisClip by remember(player, gif.id) { mutableStateOf(false) }
+    DisposableEffect(player, gif.id) {
+        val listener = object : Player.Listener {
+            override fun onRenderedFirstFrame() {
+                if (player?.currentMediaItem?.mediaId == gif.id) showingThisClip = true
+            }
+
+            override fun onMediaItemTransition(item: MediaItem?, reason: Int) {
+                if (item?.mediaId != gif.id) showingThisClip = false
+            }
+        }
+        player?.addListener(listener)
+        onDispose { player?.removeListener(listener) }
+    }
+
     Box(
         Modifier
             .fillMaxSize()
@@ -678,7 +695,7 @@ private fun GifPage(
                 },
                 update = { it.player = player },
                 onRelease = { it.player = null },
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier.fillMaxSize().alpha(if (showingThisClip) 1f else 0f),
             )
         }
         if (swipe != 0f) {

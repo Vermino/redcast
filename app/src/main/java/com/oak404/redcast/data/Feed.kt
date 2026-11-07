@@ -57,6 +57,15 @@ class Feed(val source: FeedSource, private val loader: suspend (Int) -> GifPage)
         }
     }
 
+    /** Puts [gif] first, for a change made in the app that the listing would only show after a reload. */
+    fun prepend(gif: Gif) {
+        if (_items.value.none { it.id == gif.id }) _items.value = listOf(gif) + _items.value
+    }
+
+    fun remove(gifIds: Set<String>) {
+        if (gifIds.isNotEmpty()) _items.value = _items.value.filterNot { it.id in gifIds }
+    }
+
     /** A new feed over the same source, shuffled a page at a time. */
     fun shuffled(): Feed = Feed(source) { page ->
         loader(page).let { it.copy(gifs = it.gifs.shuffled()) }
