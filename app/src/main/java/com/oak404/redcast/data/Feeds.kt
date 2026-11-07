@@ -12,9 +12,15 @@ class Feeds(private val api: RedgifsApi, private val library: Library) {
         is ApiFeed -> Feed(source) { page -> visible(api.feed(source, page)) }
         FeedSource.Mix -> Feed(source, ::loadMix)
         is FeedSource.Similar -> Feed(source) { page -> visible(loadSimilar(source.gif, page)) }
-        is FeedSource.SavedList -> Feed(source) { page ->
-            if (page > 1) GifPage(emptyList(), 1)
-            else GifPage(library.lists.value[source.name].orEmpty(), 1)
+        is FeedSource.SavedList -> {
+            val saved = library.lists.value[source.name].orEmpty()
+            val discover = library.settings.value.listDiscovery && saved.isNotEmpty()
+            Feed(source) { page ->
+                when {
+                    page == 1 -> GifPage(saved, if (discover) Int.MAX_VALUE else 1)
+                    else -> loadLike(saved, page - 1)
+                }
+            }
         }
         FeedSource.History -> Feed(source) { page ->
             if (page > 1) GifPage(emptyList(), 1) else visible(GifPage(library.history.value, 1))
@@ -30,9 +36,23 @@ class Feeds(private val api: RedgifsApi, private val library: Library) {
     /** One page of My Mix: fresh clips from the top tags and creators, ranked for this person. */
     private suspend fun loadMix(page: Int): GifPage {
         val taste = library.taste.value
+        if (taste.topTags(MIX_TAGS).isEmpty() && taste.topCreators(MIX_CREATORS).isEmpty()) {
+            return visible(api.feed(FeedSource.Trending, page))
+        }
+        return ranked(taste, page)
+    }
+
+    /** More like a collection: its own tags and creators, ranked by how often they appear in it. */
+    private suspend fun loadLike(saved: List<Gif>, page: Int): GifPage {
+        val inList = saved.mapTo(HashSet()) { it.id }
+        val found = ranked(collectionTaste(saved, library.taste.value), page)
+        return visible(found.copy(gifs = found.gifs.filterNot { it.id in inList }))
+    }
+
+    private suspend fun ranked(taste: Taste, page: Int): GifPage {
         val sources = taste.topTags(MIX_TAGS).map { FeedSource.Tag(it) } +
             taste.topCreators(MIX_CREATORS).map { FeedSource.CreatorGifs(it) }
-        if (sources.isEmpty()) return visible(api.feed(FeedSource.Trending, page))
+        if (sources.isEmpty()) return GifPage(emptyList(), 0)
 
         val candidates = coroutineScope {
             sources.map { source ->
@@ -64,3 +84,15 @@ class Feeds(private val api: RedgifsApi, private val library: Library) {
         const val SIMILAR_TAGS = 2
     }
 }
+
+/**
+ * What a collection is about, as a taste: every clip in it counts as liked. The person's own
+ * hidden tags, creators and seen clips still apply, so discovery doesn't repeat itself.
+ */
+internal fun collectionTaste(saved: List<Gif>, own: Taste): Taste =
+    saved.fold(Taste()) { taste, gif -> taste.record(gif, Signal.Liked) }.copy(
+        hiddenGifs = own.hiddenGifs,
+        hiddenCreators = own.hiddenCreators,
+        hiddenTags = own.hiddenTags,
+        seen = own.seen,
+    )

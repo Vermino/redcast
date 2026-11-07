@@ -256,8 +256,19 @@ fun ListingScreen(viewModel: MainViewModel, feed: Feed) {
             )
         },
     ) { padding ->
-        Box(Modifier.padding(padding).fillMaxSize()) {
-            FeedGrid(viewModel, feed)
+        Column(Modifier.padding(padding).fillMaxSize()) {
+            if (feed.source is FeedSource.SavedList) {
+                val settings by viewModel.library.settings.collectAsStateWithLifecycle()
+                FilterChip(
+                    selected = settings.listDiscovery,
+                    onClick = { viewModel.setListDiscovery(!settings.listDiscovery) },
+                    label = { Text("Then more like these") },
+                    modifier = Modifier.padding(horizontal = 8.dp),
+                )
+            }
+            Box(Modifier.weight(1f)) {
+                FeedGrid(viewModel, feed)
+            }
         }
     }
 }

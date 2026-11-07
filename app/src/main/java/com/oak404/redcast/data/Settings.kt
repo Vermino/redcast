@@ -32,6 +32,7 @@ data class Settings(
     val defaultTab: String = "Mix",
     val showPromoted: Boolean = true,
     val swipeToCurate: Boolean = true,
+    val listDiscovery: Boolean = true,
 ) {
     fun toJson(): JSONObject = JSONObject()
         .put("theme", theme.name)
@@ -41,6 +42,7 @@ data class Settings(
         .put("defaultTab", defaultTab)
         .put("showPromoted", showPromoted)
         .put("swipeToCurate", swipeToCurate)
+        .put("listDiscovery", listDiscovery)
 }
 
 internal fun settingsFrom(json: JSONObject): Settings {
@@ -53,6 +55,7 @@ internal fun settingsFrom(json: JSONObject): Settings {
         defaultTab = json.optString("defaultTab").ifEmpty { defaults.defaultTab },
         showPromoted = json.optBoolean("showPromoted", defaults.showPromoted),
         swipeToCurate = json.optBoolean("swipeToCurate", defaults.swipeToCurate),
+        listDiscovery = json.optBoolean("listDiscovery", defaults.listDiscovery),
     )
 }
 

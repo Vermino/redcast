@@ -5,6 +5,7 @@ import kotlin.math.sqrt
 
 enum class Signal(val weight: Double) {
     Liked(3.0),
+    Saved(2.0),
     Finished(1.0),
     Skipped(-1.0),
     Passed(-3.0),

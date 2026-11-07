@@ -287,6 +287,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /** Into a collection, which also counts toward My Mix. */
+    fun saveTo(list: String, gif: Gif) {
+        val already = library.lists.value[list].orEmpty().any { it.id == gif.id }
+        library.addToList(list, gif)
+        if (!already) library.updateTaste { it.record(gif, Signal.Saved) }
+        _message.value = if (already) "Already in $list" else "Saved to $list"
+    }
+
+    fun setListDiscovery(on: Boolean) {
+        library.updateSettings { it.copy(listDiscovery = on) }
+        val top = backStack.lastIndex
+        val route = backStack.getOrNull(top) as? Route.Listing ?: return
+        if (route.feed.source is FeedSource.SavedList) backStack[top] = Route.Listing(feeds.create(route.feed.source))
+    }
+
     /** Swipe left: drops the clip and steers My Mix away from its tags and creator. */
     fun pass(gif: Gif) {
         library.updateTaste { it.record(gif, Signal.Passed).copy(hiddenGifs = it.hiddenGifs + gif.id) }

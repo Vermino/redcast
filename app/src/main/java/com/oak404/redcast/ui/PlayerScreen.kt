@@ -5,8 +5,24 @@ import androidx.annotation.OptIn
 import androidx.compose.animation.core.Animatable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.awaitHorizontalTouchSlopOrCancellation
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
+import kotlin.math.roundToInt
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -116,6 +132,12 @@ fun PlayerScreen(viewModel: MainViewModel, feed: Feed, startIndex: Int) {
     val settings by viewModel.library.settings.collectAsStateWithLifecycle()
     val swipeEnabled = settings.swipeToCurate
     var swipeHint by remember { mutableStateOf(!viewModel.library.swipeHintSeen) }
+    val lists by viewModel.library.lists.collectAsStateWithLifecycle()
+    var screen by remember { mutableStateOf(IntSize.Zero) }
+    var sorting by remember { mutableStateOf<Gif?>(null) }
+    var finger by remember { mutableStateOf(Offset.Zero) }
+    val reach = with(LocalDensity.current) { SORT_REACH.toPx() }
+    val targets = remember(lists.keys, screen) { sortTargets(lists.keys.toList(), screen.width, screen.height) }
     // A swipe already said how this clip went, so leaving it early isn't also a skip.
     val judged = remember { HashSet<String>() }
 
@@ -230,7 +252,18 @@ fun PlayerScreen(viewModel: MainViewModel, feed: Feed, startIndex: Int) {
         goToNext()
     }
 
-    Box(Modifier.fillMaxSize().background(Color.Black)) {
+    val drop: () -> Unit = {
+        val gif = sorting
+        val target = targetAt(targets, finger.x, finger.y, reach)
+        sorting = null
+        if (gif != null && target != null) {
+            swipeHint = false
+            viewModel.library.swipeHintSeen = true
+            if (target.isNew) savingGif = gif else viewModel.saveTo(target.label, gif)
+        }
+    }
+
+    Box(Modifier.fillMaxSize().background(Color.Black).onSizeChanged { screen = it }) {
         VerticalPager(
             state = pager,
             beyondViewportPageCount = 1,
@@ -250,6 +283,12 @@ fun PlayerScreen(viewModel: MainViewModel, feed: Feed, startIndex: Int) {
                 swipeEnabled = swipeEnabled,
                 onKeep = { judge(gif) { viewModel.keep(it, feed, page) } },
                 onPass = { judge(gif, viewModel::pass) },
+                onHold = { at ->
+                    sorting = gif
+                    finger = at
+                },
+                onHoldMove = { finger = it },
+                onRelease = drop,
             )
         }
 
@@ -274,7 +313,7 @@ fun PlayerScreen(viewModel: MainViewModel, feed: Feed, startIndex: Int) {
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 if (swipeHint && swipeEnabled) {
                     Text(
-                        "Swipe right to keep, left to pass",
+                        "Swipe right to keep, left to pass. Hold to sort into a list.",
                         color = Color.White,
                         modifier = Modifier
                             .align(Alignment.TopCenter)
@@ -330,8 +369,61 @@ fun PlayerScreen(viewModel: MainViewModel, feed: Feed, startIndex: Int) {
         }
     }
 
+    sorting?.let { gif ->
+        SortOverlay(gif, targets, finger, reach)
+    }
+
     savingGif?.let { gif ->
         SaveDialog(viewModel, gif, onDismiss = { savingGif = null })
+    }
+}
+
+/** Hold-to-sort: collection bubbles around the screen, with the held clip under the finger. */
+@Composable
+private fun SortOverlay(gif: Gif, targets: List<SortTarget>, finger: Offset, reach: Float) {
+    val over = targetAt(targets, finger.x, finger.y, reach)
+    val density = LocalDensity.current
+    val bubble = with(density) { SORT_BUBBLE.toPx() }
+    val thumb = with(density) { SORT_THUMB.toPx() }
+    Box(Modifier.fillMaxSize().background(Color(0xB3000000))) {
+        targets.forEach { target ->
+            val active = target == over
+            Box(
+                Modifier
+                    .offset { IntOffset((target.x - bubble / 2).roundToInt(), (target.y - bubble / 2).roundToInt()) }
+                    .size(SORT_BUBBLE)
+                    .clip(CircleShape)
+                    .background(if (active) MaterialTheme.colorScheme.primary else Color(0xCC1B1B1F))
+                    .border(2.dp, Color.White.copy(alpha = if (active) 1f else 0.4f), CircleShape)
+                    .padding(8.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    if (target.isNew) "+ ${target.label}" else target.label,
+                    color = Color.White,
+                    textAlign = TextAlign.Center,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.labelLarge,
+                )
+            }
+        }
+        AsyncImage(
+            model = gif.thumbnailUrl,
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier
+                .offset { IntOffset((finger.x - thumb / 2).roundToInt(), (finger.y - thumb * 0.9f).roundToInt()) }
+                .size(SORT_THUMB)
+                .clip(RoundedCornerShape(10.dp))
+                .border(2.dp, Color.White, RoundedCornerShape(10.dp)),
+        )
+        Text(
+            over?.let { if (it.isNew) "Drop to make a new list" else "Drop into ${it.label}" } ?: "Drag onto a list",
+            color = Color.White,
+            style = MaterialTheme.typography.titleMedium,
+            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 48.dp),
+        )
     }
 }
 
@@ -418,7 +510,7 @@ private fun SaveDialog(viewModel: MainViewModel, gif: Gif, onDismiss: () -> Unit
     val lists by viewModel.library.lists.collectAsStateWithLifecycle()
     var newName by remember { mutableStateOf("") }
     val save: (String) -> Unit = { name ->
-        viewModel.library.addToList(name, gif)
+        viewModel.saveTo(name, gif)
         onDismiss()
     }
 
@@ -461,11 +553,18 @@ private fun GifPage(
     swipeEnabled: Boolean,
     onKeep: () -> Unit,
     onPass: () -> Unit,
+    onHold: (Offset) -> Unit,
+    onHoldMove: (Offset) -> Unit,
+    onRelease: () -> Unit,
 ) {
     val tap by rememberUpdatedState(onTap)
     val doubleTap by rememberUpdatedState(onDoubleTap)
     val keep by rememberUpdatedState(onKeep)
     val pass by rememberUpdatedState(onPass)
+    val hold by rememberUpdatedState(onHold)
+    val holdMove by rememberUpdatedState(onHoldMove)
+    val release by rememberUpdatedState(onRelease)
+    val haptics = LocalHapticFeedback.current
     val scope = rememberCoroutineScope()
     val offset = remember { Animatable(0f) }
     var pageWidth by remember { mutableFloatStateOf(1f) }
@@ -475,31 +574,59 @@ private fun GifPage(
         Modifier
             .fillMaxSize()
             .background(Color.Black)
+            // A long press here only stops the hold from also counting as a tap.
             .pointerInput(Unit) {
-                detectTapGestures(onTap = { tap() }, onDoubleTap = { doubleTap() })
+                detectTapGestures(onTap = { tap() }, onDoubleTap = { doubleTap() }, onLongPress = {})
             }
+            // Sideways is a swipe, holding still is sort, and up or down is left to the pager.
             .pointerInput(swipeEnabled) {
                 pageWidth = size.width.toFloat()
-                if (!swipeEnabled) return@pointerInput
-                detectHorizontalDragGestures(
-                    onDragEnd = {
-                        scope.launch {
-                            val verdict = offset.value / size.width
-                            if (abs(verdict) < SWIPE_FRACTION) {
-                                offset.animateTo(0f)
-                                return@launch
-                            }
-                            offset.animateTo(if (verdict > 0) size.width * 1.5f else size.width * -1.5f)
-                            if (verdict > 0) keep() else pass()
-                            offset.snapTo(0f)
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    var decided = false
+                    val sideways = withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis) {
+                        val change = if (swipeEnabled) {
+                            awaitHorizontalTouchSlopOrCancellation(down.id) { change, _ -> change.consume() }
+                        } else {
+                            waitForUpOrCancellation()
+                            null
                         }
-                    },
-                    onDragCancel = { scope.launch { offset.animateTo(0f) } },
-                    onHorizontalDrag = { change, delta ->
-                        change.consume()
-                        scope.launch { offset.snapTo(offset.value + delta) }
-                    },
-                )
+                        decided = true
+                        change
+                    }
+                    when {
+                        sideways != null -> {
+                            while (true) {
+                                val change = awaitPointerEvent().changes.firstOrNull { it.id == down.id } ?: break
+                                if (!change.pressed) break
+                                val dx = change.position.x - change.previousPosition.x
+                                change.consume()
+                                scope.launch { offset.snapTo(offset.value + dx) }
+                            }
+                            scope.launch {
+                                val verdict = offset.value / size.width
+                                if (abs(verdict) < SWIPE_FRACTION) {
+                                    offset.animateTo(0f)
+                                    return@launch
+                                }
+                                offset.animateTo(if (verdict > 0) size.width * 1.5f else size.width * -1.5f)
+                                if (verdict > 0) keep() else pass()
+                                offset.snapTo(0f)
+                            }
+                        }
+                        !decided -> {
+                            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                            hold(down.position)
+                            while (true) {
+                                val change = awaitPointerEvent().changes.firstOrNull { it.id == down.id } ?: break
+                                change.consume()
+                                if (!change.pressed) break
+                                holdMove(change.position)
+                            }
+                            release()
+                        }
+                    }
+                }
             }
             .graphicsLayer {
                 translationX = offset.value
@@ -571,6 +698,9 @@ private fun mediaItem(gif: Gif, url: String): MediaItem =
 private const val LOAD_AHEAD = 6
 private const val SWIPE_FRACTION = 0.3f
 private const val MAX_TILT_DEGREES = 12f
+private val SORT_BUBBLE = 92.dp
+private val SORT_THUMB = 72.dp
+private val SORT_REACH = 56.dp
 private const val PROGRESS_TICK_MS = 200L
 private const val SKIP_THRESHOLD_MS = 3_000L
 private val SLEEP_MINUTES = listOf(15, 30, 60)
