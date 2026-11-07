@@ -68,12 +68,14 @@ class RedgifsApi(private val session: Session, private val http: OkHttpClient) {
     suspend fun myUserName(): String? =
         call("v1/me", requiresUser = true).optString("username").ifEmpty { null }
 
-    suspend fun setLiked(gifId: String, liked: Boolean) {
-        val encoded = Uri.encode(gifId)
+    /** [position] counts from 1, as on the site. */
+    suspend fun setLiked(gifId: String, liked: Boolean, from: FeedSource?, position: Int) {
+        val body = if (liked) likeBody(from, position) else JSONObject().put("context", JSONObject.NULL)
         call(
-            "v2/gifs/$encoded/like",
+            "v2/gifs/${Uri.encode(gifId)}/like",
             requiresUser = true,
             method = if (liked) "PUT" else "DELETE",
+            body = body,
         )
     }
 
@@ -81,14 +83,15 @@ class RedgifsApi(private val session: Session, private val http: OkHttpClient) {
         path: String,
         requiresUser: Boolean,
         method: String = "GET",
+        body: JSONObject? = null,
     ): JSONObject {
         val token = token(requiresUser)
-        val first = send(path, token, method)
+        val first = send(path, token, method, body)
         if (first.status != 401) return first.unwrap()
 
         // Expired or revoked: get a new token once, then let any second failure surface.
         session.invalidate(token)
-        return send(path, token(requiresUser), method).unwrap()
+        return send(path, token(requiresUser), method, body).unwrap()
     }
 
     private suspend fun callArray(path: String): JSONArray {
@@ -101,9 +104,9 @@ class RedgifsApi(private val session: Session, private val http: OkHttpClient) {
         if (requiresUser) session.userToken() ?: throw SignInRequiredException()
         else session.anyToken()
 
-    private suspend fun send(path: String, token: String, method: String): Reply =
+    private suspend fun send(path: String, token: String, method: String, json: JSONObject? = null): Reply =
         withContext(Dispatchers.IO) {
-            val body = if (method == "PUT") "{}".toRequestBody(JSON) else null
+            val body = (json ?: if (method == "PUT") JSONObject() else null)?.toString()?.toRequestBody(JSON)
             val request = Request.Builder()
                 .url("$API_BASE/$path")
                 .header("Authorization", "Bearer $token")
@@ -135,3 +138,9 @@ class RedgifsApi(private val session: Session, private val http: OkHttpClient) {
         private val JSON = "application/json".toMediaType()
     }
 }
+
+internal fun likeBody(from: FeedSource?, position: Int): JSONObject = JSONObject()
+    .put("context", JSONObject.NULL)
+    .put("source", from?.likeSource ?: "watch")
+    .put("source_id", from?.likeSourceId ?: JSONObject.NULL)
+    .put("position", position.coerceAtLeast(1))

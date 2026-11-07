@@ -30,6 +30,8 @@ data class Settings(
     val layout: FeedLayout = FeedLayout.Grid,
     val columns: Int = 3,
     val defaultTab: String = "Mix",
+    val showPromoted: Boolean = true,
+    val swipeToCurate: Boolean = true,
 ) {
     fun toJson(): JSONObject = JSONObject()
         .put("theme", theme.name)
@@ -37,6 +39,8 @@ data class Settings(
         .put("layout", layout.name)
         .put("columns", columns)
         .put("defaultTab", defaultTab)
+        .put("showPromoted", showPromoted)
+        .put("swipeToCurate", swipeToCurate)
 }
 
 internal fun settingsFrom(json: JSONObject): Settings {
@@ -47,6 +51,8 @@ internal fun settingsFrom(json: JSONObject): Settings {
         layout = enumOr(json.optString("layout"), defaults.layout),
         columns = json.optInt("columns", defaults.columns).coerceIn(2, 4),
         defaultTab = json.optString("defaultTab").ifEmpty { defaults.defaultTab },
+        showPromoted = json.optBoolean("showPromoted", defaults.showPromoted),
+        swipeToCurate = json.optBoolean("swipeToCurate", defaults.swipeToCurate),
     )
 }
 

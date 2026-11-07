@@ -23,7 +23,8 @@ class Feeds(private val api: RedgifsApi, private val library: Library) {
 
     private fun visible(page: GifPage): GifPage {
         val taste = library.taste.value
-        return page.copy(gifs = page.gifs.filterNot(taste::hides))
+        val showPromoted = library.settings.value.showPromoted
+        return page.copy(gifs = page.gifs.filterNot { taste.hides(it) || (it.promoted && !showPromoted) })
     }
 
     /** One page of My Mix: fresh clips from the top tags and creators, ranked for this person. */

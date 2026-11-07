@@ -277,9 +277,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun onClipSkipped(gif: Gif) = library.updateTaste { it.record(gif, Signal.Skipped) }
 
     /** Swipe right: a like when signed in, otherwise a local save. Either way, it teaches My Mix. */
-    fun keep(gif: Gif) {
+    fun keep(gif: Gif, from: Feed, index: Int) {
         when {
-            session.signedIn.value -> if (gif.id !in _likedIds.value) toggleLike(gif)
+            session.signedIn.value -> if (gif.id !in _likedIds.value) toggleLike(gif, from, index)
             else -> {
                 library.updateTaste { it.record(gif, Signal.Liked) }
                 library.addToList(KEPT_LIST, gif)
@@ -319,13 +319,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun unhideGifs() = library.updateTaste { it.copy(hiddenGifs = emptySet()) }
 
-    fun toggleLike(gif: Gif) {
+    /** [index] is the clip's place in [from], which the site wants with every like. */
+    fun toggleLike(gif: Gif, from: Feed?, index: Int) {
         val wasLiked = gif.id in _likedIds.value
         _likedIds.value = if (wasLiked) _likedIds.value - gif.id else _likedIds.value + gif.id
         if (!wasLiked) library.updateTaste { it.record(gif, Signal.Liked) }
         viewModelScope.launch {
             try {
-                api.setLiked(gif.id, !wasLiked)
+                api.setLiked(gif.id, !wasLiked, from?.source, index + 1)
             } catch (e: IOException) {
                 _likedIds.value = if (wasLiked) _likedIds.value + gif.id else _likedIds.value - gif.id
                 _message.value = e.message

@@ -113,6 +113,8 @@ fun PlayerScreen(viewModel: MainViewModel, feed: Feed, startIndex: Int) {
     var userPaused by rememberSaveable { mutableStateOf(false) }
     var firstSettle by remember { mutableStateOf(true) }
     var savingGif by remember { mutableStateOf<Gif?>(null) }
+    val settings by viewModel.library.settings.collectAsStateWithLifecycle()
+    val swipeEnabled = settings.swipeToCurate
     var swipeHint by remember { mutableStateOf(!viewModel.library.swipeHintSeen) }
     // A swipe already said how this clip went, so leaving it early isn't also a skip.
     val judged = remember { HashSet<String>() }
@@ -243,9 +245,10 @@ fun PlayerScreen(viewModel: MainViewModel, feed: Feed, startIndex: Int) {
                     if (casting) cast.togglePlayback() else userPaused = !userPaused
                 },
                 onDoubleTap = {
-                    if (signedIn && gif.id !in likedIds) viewModel.toggleLike(gif)
+                    if (signedIn && gif.id !in likedIds) viewModel.toggleLike(gif, feed, page)
                 },
-                onKeep = { judge(gif, viewModel::keep) },
+                swipeEnabled = swipeEnabled,
+                onKeep = { judge(gif) { viewModel.keep(it, feed, page) } },
                 onPass = { judge(gif, viewModel::pass) },
             )
         }
@@ -269,7 +272,7 @@ fun PlayerScreen(viewModel: MainViewModel, feed: Feed, startIndex: Int) {
                 CastButton(viewModel, onDark = true)
             }
             Box(Modifier.weight(1f).fillMaxWidth()) {
-                if (swipeHint) {
+                if (swipeHint && swipeEnabled) {
                     Text(
                         "Swipe right to keep, left to pass",
                         color = Color.White,
@@ -297,7 +300,7 @@ fun PlayerScreen(viewModel: MainViewModel, feed: Feed, startIndex: Int) {
                             if (liked) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
                             if (liked) "Unlike" else "Like",
                             tint = if (liked) MaterialTheme.colorScheme.primary else Color.White,
-                        ) { viewModel.toggleLike(current) }
+                        ) { viewModel.toggleLike(current, feed, pager.currentPage) }
                     }
                     if (!casting) {
                         OverlayButton(
@@ -346,6 +349,17 @@ private fun ClipDetails(viewModel: MainViewModel, gif: Gif) {
             Icon(Icons.Default.Person, contentDescription = null, tint = Color.White, modifier = Modifier.size(20.dp))
             Spacer(Modifier.width(6.dp))
             Text(gif.userName, color = Color.White, style = MaterialTheme.typography.titleMedium)
+        }
+        if (gif.promoted) {
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "Promoted",
+                color = Color.White,
+                style = MaterialTheme.typography.labelSmall,
+                modifier = Modifier
+                    .background(Color(0x66000000), RoundedCornerShape(4.dp))
+                    .padding(horizontal = 6.dp, vertical = 2.dp),
+            )
         }
         Spacer(Modifier.height(6.dp))
         LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -444,6 +458,7 @@ private fun GifPage(
     player: ExoPlayer?,
     onTap: () -> Unit,
     onDoubleTap: () -> Unit,
+    swipeEnabled: Boolean,
     onKeep: () -> Unit,
     onPass: () -> Unit,
 ) {
@@ -463,8 +478,9 @@ private fun GifPage(
             .pointerInput(Unit) {
                 detectTapGestures(onTap = { tap() }, onDoubleTap = { doubleTap() })
             }
-            .pointerInput(Unit) {
+            .pointerInput(swipeEnabled) {
                 pageWidth = size.width.toFloat()
+                if (!swipeEnabled) return@pointerInput
                 detectHorizontalDragGestures(
                     onDragEnd = {
                         scope.launch {

@@ -1,6 +1,8 @@
 package com.oak404.redcast
 
 import com.oak404.redcast.auth.Jwt
+import com.oak404.redcast.data.FeedSource
+import com.oak404.redcast.data.likeBody
 import com.oak404.redcast.data.parseGif
 import com.oak404.redcast.data.parseGifPage
 import org.json.JSONArray
@@ -37,10 +39,32 @@ class ParsingTest {
     }
 
     @Test
-    fun skipsImagesAdsAndGalleries() {
+    fun skipsImagesAndGalleries() {
         assertNull(parseGif(gifJson().put("type", 2)))
-        assertNull(parseGif(gifJson().put("promoted", true)))
         assertNull(parseGif(gifJson().put("gallery", "g1")))
+    }
+
+    @Test
+    fun keepsPromotedClipsAndMarksThem() {
+        assertTrue(parseGif(gifJson().put("promoted", true))!!.promoted)
+        assertFalse(parseGif(gifJson())!!.promoted)
+    }
+
+    @Test
+    fun aLikeNamesItsFeedAndPosition() {
+        val body = likeBody(FeedSource.Tag("Cute"), 3)
+        assertEquals("tag-gifs", body.getString("source"))
+        assertEquals("Cute", body.getString("source_id"))
+        assertEquals(3, body.getInt("position"))
+        assertTrue(body.isNull("context"))
+    }
+
+    @Test
+    fun aLikeFromALocalFeedStillHasASource() {
+        val body = likeBody(FeedSource.Mix, 0)
+        assertEquals("watch", body.getString("source"))
+        assertTrue(body.isNull("source_id"))
+        assertEquals(1, body.getInt("position"))
     }
 
     @Test

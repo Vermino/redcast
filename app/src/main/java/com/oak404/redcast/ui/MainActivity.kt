@@ -119,6 +119,6 @@ private fun Root(viewModel: MainViewModel, appLock: AppLock) {
         is Route.Listing -> ListingScreen(viewModel, route.feed)
         is Route.Creator -> CreatorScreen(viewModel, route)
         is Route.Player -> PlayerScreen(viewModel, route.feed, route.startIndex)
-        Route.Settings -> SettingsScreen(viewModel)
+        Route.Settings -> SettingsScreen(viewModel, appLock)
     }
 }

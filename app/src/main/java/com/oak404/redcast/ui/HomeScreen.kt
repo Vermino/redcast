@@ -40,7 +40,6 @@ import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material3.Button
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -300,15 +299,6 @@ private fun AccountMenu(viewModel: MainViewModel, signedIn: Boolean, appLock: Ap
                 onClick = {
                     open = false
                     viewModel.openSettings()
-                },
-            )
-            DropdownMenuItem(
-                text = { Text("App lock") },
-                leadingIcon = { Checkbox(checked = appLock.enabled, onCheckedChange = null) },
-                enabled = appLock.available,
-                onClick = {
-                    appLock.enabled = !appLock.enabled
-                    open = false
                 },
             )
             DropdownMenuItem(
