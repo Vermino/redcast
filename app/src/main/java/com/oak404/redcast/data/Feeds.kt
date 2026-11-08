@@ -9,6 +9,16 @@ import java.io.IOException
 class Feeds(private val api: RedgifsApi, private val library: Library) {
 
     fun create(source: FeedSource): Feed = when (source) {
+        is FeedSource.Query -> {
+            val excluded = WordFilter(source.search.exclude)
+            Feed(source) { page ->
+                val found = visible(api.feed(source, page))
+                found.copy(
+                    gifs = found.gifs.filterNot(excluded::matches),
+                    relatedTags = found.relatedTags.filterNot(excluded::matches),
+                )
+            }
+        }
         is ApiFeed -> Feed(source) { page -> visible(api.feed(source, page)) }
         FeedSource.Mix -> Feed(source, ::loadMix)
         is FeedSource.Similar -> Feed(source) { page -> visible(loadSimilar(source.gif, page)) }
@@ -30,7 +40,10 @@ class Feeds(private val api: RedgifsApi, private val library: Library) {
     private fun visible(page: GifPage): GifPage {
         val taste = library.taste.value
         val showPromoted = library.settings.value.showPromoted
-        return page.copy(gifs = page.gifs.filterNot { taste.hides(it) || (it.promoted && !showPromoted) })
+        return page.copy(
+            gifs = page.gifs.filterNot { taste.hides(it) || (it.promoted && !showPromoted) },
+            relatedTags = page.relatedTags.filterNot { it in taste.hiddenTags || taste.mutes(it) },
+        )
     }
 
     /** One page of My Mix: fresh clips from the top tags and creators, ranked for this person. */
@@ -94,5 +107,6 @@ internal fun collectionTaste(saved: List<Gif>, own: Taste): Taste =
         hiddenGifs = own.hiddenGifs,
         hiddenCreators = own.hiddenCreators,
         hiddenTags = own.hiddenTags,
+        mutedWords = own.mutedWords,
         seen = own.seen,
     )

@@ -23,6 +23,10 @@ class Feed(val source: FeedSource, private val loader: suspend (Int) -> GifPage)
     private val _exhausted = MutableStateFlow(false)
     val exhausted: StateFlow<Boolean> = _exhausted.asStateFlow()
 
+    private val _relatedTags = MutableStateFlow<List<String>>(emptyList())
+    /** Tags that go with this listing, from its first page, for narrowing it down. */
+    val relatedTags: StateFlow<List<String>> = _relatedTags.asStateFlow()
+
     private val mutex = Mutex()
     private var nextPage = 1
 
@@ -75,11 +79,21 @@ class Feed(val source: FeedSource, private val loader: suspend (Int) -> GifPage)
         _loading.value = true
         _error.value = null
         return try {
-            val page = loader(nextPage)
-            nextPage++
-            val known = _items.value.mapTo(HashSet()) { it.id }
-            _items.value += page.gifs.filter { known.add(it.id) }
-            if (page.gifs.isEmpty() || nextPage > page.pages) _exhausted.value = true
+            // Muted words can empty a whole page while more remain, so look a few pages further.
+            var skipped = 0
+            while (true) {
+                val page = loader(nextPage)
+                nextPage++
+                if (_relatedTags.value.isEmpty()) _relatedTags.value = page.relatedTags
+                val known = _items.value.mapTo(HashSet()) { it.id }
+                _items.value += page.gifs.filter { known.add(it.id) }
+                if (nextPage > page.pages) _exhausted.value = true
+                if (page.gifs.isNotEmpty() || _exhausted.value) break
+                if (++skipped >= MAX_EMPTY_PAGES) {
+                    _exhausted.value = true
+                    break
+                }
+            }
             true
         } catch (t: IOException) {
             _error.value = t
@@ -90,5 +104,9 @@ class Feed(val source: FeedSource, private val loader: suspend (Int) -> GifPage)
         } finally {
             _loading.value = false
         }
+    }
+
+    private companion object {
+        const val MAX_EMPTY_PAGES = 5
     }
 }

@@ -1,5 +1,25 @@
 package com.oak404.redcast.ui
 
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.History
+import androidx.compose.material3.InputChip
+import androidx.compose.material3.InputChipDefaults
+import androidx.compose.material3.SuggestionChip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.style.TextOverflow
+import com.oak404.redcast.data.SearchOrder
+import com.oak404.redcast.data.SearchQuery
+import com.oak404.redcast.data.searchOf
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -89,74 +109,72 @@ import kotlinx.coroutines.launch
 @Composable
 fun HomeScreen(viewModel: MainViewModel, appLock: AppLock) {
     val signedIn by viewModel.session.signedIn.collectAsStateWithLifecycle()
-    val suggestions by viewModel.suggestions.collectAsStateWithLifecycle()
-    var searching by rememberSaveable { mutableStateOf(false) }
+    val searching = viewModel.searching
     var query by rememberSaveable { mutableStateOf("") }
+
+    BackHandler(enabled = searching) {
+        query = ""
+        viewModel.closeSearch()
+    }
 
     Scaffold(
         topBar = {
             TopAppBar(
                 title = {
                     if (searching) {
+                        val focus = remember { FocusRequester() }
                         TextField(
                             value = query,
                             onValueChange = {
                                 query = it
-                                viewModel.onQueryChanged(it)
+                                viewModel.onQueryChanged(it.trim().removePrefix("-"))
                             },
-                            placeholder = { Text("Search") },
+                            placeholder = { Text("Search, or add tags") },
                             singleLine = true,
                             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                             keyboardActions = KeyboardActions(onSearch = {
-                                viewModel.search(query)
-                                searching = false
+                                val text = query.trim()
+                                if (text.startsWith("-")) {
+                                    val word = text.removePrefix("-").trim()
+                                    if (word.isNotEmpty()) viewModel.draft = viewModel.draft.withExcluded(word)
+                                } else {
+                                    viewModel.search(viewModel.draft.copy(text = text))
+                                }
+                                query = ""
+                                viewModel.onQueryChanged("")
                             }),
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier.fillMaxWidth().focusRequester(focus),
                         )
+                        LaunchedEffect(Unit) { focus.requestFocus() }
                     } else {
                         Text("Redcast")
                     }
                 },
                 actions = {
                     IconButton(onClick = {
-                        searching = !searching
-                        viewModel.onQueryChanged("")
+                        query = ""
+                        if (searching) viewModel.closeSearch() else viewModel.openSearch()
                     }) {
                         Icon(
                             if (searching) Icons.Default.Close else Icons.Default.Search,
                             contentDescription = if (searching) "Close search" else "Search",
                         )
                     }
-                    IconButton(onClick = { viewModel.shufflePlay(viewModel.feedFor(viewModel.tab)) }) {
-                        Icon(Icons.Default.Shuffle, contentDescription = "Shuffle this feed")
+                    if (!searching) {
+                        IconButton(onClick = { viewModel.shufflePlay(viewModel.feedFor(viewModel.tab)) }) {
+                            Icon(Icons.Default.Shuffle, contentDescription = "Shuffle this feed")
+                        }
+                        CastButton(viewModel)
+                        AccountMenu(viewModel, signedIn, appLock)
                     }
-                    CastButton(viewModel)
-                    AccountMenu(viewModel, signedIn, appLock)
                 },
             )
         },
     ) { padding ->
         Column(Modifier.padding(padding).fillMaxSize()) {
-            if (searching && query.isBlank()) {
-                RecentSearches(viewModel) { text ->
-                    viewModel.search(text)
-                    searching = false
-                }
-            }
-            if (searching && suggestions.isNotEmpty()) {
-                suggestions.forEach { suggestion ->
-                    Text(
-                        suggestion.text,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable {
-                                viewModel.openSuggestion(suggestion)
-                                searching = false
-                            }
-                            .padding(horizontal = 16.dp, vertical = 12.dp),
-                    )
-                }
-                HorizontalDivider()
+            if (searching) {
+                SearchBuilder(viewModel, query) { query = "" }
+                return@Column
             }
             PrimaryScrollableTabRow(selectedTabIndex = viewModel.tab.ordinal) {
                 HomeTab.entries.forEach { tab ->
@@ -180,6 +198,169 @@ fun HomeScreen(viewModel: MainViewModel, appLock: AppLock) {
             }
         }
     }
+}
+
+/**
+ * Everything under the open search bar: the tags picked so far, the sort order, suggestions
+ * for what's typed, and recent searches and popular tags when nothing is.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun SearchBuilder(viewModel: MainViewModel, typed: String, clearTyped: () -> Unit) {
+    val suggestions by viewModel.suggestions.collectAsStateWithLifecycle()
+    val trending by viewModel.trendingTags.collectAsStateWithLifecycle()
+    val taste by viewModel.library.taste.collectAsStateWithLifecycle()
+    val draft = viewModel.draft
+    val excluding = typed.trim().startsWith("-")
+    val withTyped = draft.copy(text = if (excluding) "" else typed.trim())
+
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+        if (draft.tags.isNotEmpty() || draft.exclude.isNotEmpty()) {
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+            ) {
+                draft.tags.forEach { tag ->
+                    InputChip(
+                        selected = true,
+                        onClick = { viewModel.draft = draft.withExcluded(tag) },
+                        label = { Text(tag, maxLines = 1) },
+                        trailingIcon = { RemoveChip(tag) { viewModel.draft = draft.without(tag) } },
+                    )
+                }
+                draft.exclude.forEach { word ->
+                    InputChip(
+                        selected = false,
+                        onClick = { viewModel.draft = draft.withTag(word) },
+                        label = { Text("−$word", maxLines = 1, textDecoration = TextDecoration.LineThrough) },
+                        trailingIcon = { RemoveChip(word) { viewModel.draft = draft.without(word) } },
+                        colors = InputChipDefaults.inputChipColors(
+                            containerColor = MaterialTheme.colorScheme.errorContainer,
+                            labelColor = MaterialTheme.colorScheme.onErrorContainer,
+                        ),
+                    )
+                }
+            }
+            Text(
+                "Clips need every tag. Tap a tag to leave it out instead.",
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(horizontal = 16.dp),
+            )
+        }
+
+        LazyRow(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            contentPadding = PaddingValues(horizontal = 12.dp),
+            modifier = Modifier.padding(vertical = 4.dp),
+        ) {
+            items(SearchOrder.entries) { order ->
+                FilterChip(
+                    selected = order == draft.order,
+                    onClick = { viewModel.draft = draft.copy(order = order) },
+                    label = { Text(order.label, maxLines = 1) },
+                )
+            }
+        }
+
+        Button(
+            onClick = {
+                clearTyped()
+                viewModel.search(withTyped)
+            },
+            enabled = !withTyped.isEmpty,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+        ) {
+            Icon(Icons.Default.Search, contentDescription = null)
+            Spacer(Modifier.width(6.dp))
+            Text(
+                if (withTyped.isEmpty) "Search" else "Search ${withTyped.title}",
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        HorizontalDivider(Modifier.padding(top = 4.dp))
+
+        if (suggestions.isNotEmpty() && typed.isNotBlank()) {
+            suggestions.forEach { suggestion ->
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable {
+                            clearTyped()
+                            viewModel.pickSuggestion(suggestion, exclude = excluding)
+                        }
+                        .padding(start = 16.dp),
+                ) {
+                    Icon(
+                        when {
+                            excluding -> Icons.Default.Block
+                            suggestion.isTag -> Icons.Default.Add
+                            else -> Icons.Default.Search
+                        },
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Text(
+                        if (excluding) "Leave out ${suggestion.text}" else suggestion.text,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f).padding(horizontal = 12.dp, vertical = 14.dp),
+                    )
+                    if (suggestion.isTag && !excluding) {
+                        IconButton(onClick = {
+                            clearTyped()
+                            viewModel.pickSuggestion(suggestion, exclude = true)
+                        }) {
+                            Icon(Icons.Default.Block, contentDescription = "Leave out ${suggestion.text}")
+                        }
+                    }
+                }
+            }
+            HorizontalDivider()
+        }
+
+        if (typed.isBlank()) {
+            if (draft.isEmpty && draft.exclude.isEmpty()) {
+                RecentSearches(viewModel) { picked -> viewModel.search(picked) }
+            }
+            val inDraft = (draft.tags + draft.exclude).map { it.lowercase() }.toSet()
+            val popular = (taste.pinnedTags + trending.map { it.name }).distinct()
+                .filterNot { it.lowercase() in inDraft || it in taste.hiddenTags || taste.mutes(it) }
+            if (popular.isNotEmpty()) {
+                Text(
+                    if (draft.tags.isEmpty()) "Popular tags" else "Add another tag",
+                    style = MaterialTheme.typography.titleSmall,
+                    modifier = Modifier.padding(start = 16.dp, top = 12.dp, bottom = 4.dp),
+                )
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.padding(horizontal = 12.dp),
+                ) {
+                    popular.take(POPULAR_TAGS).forEach { tag ->
+                        SuggestionChip(
+                            onClick = { viewModel.draft = draft.withTag(tag) },
+                            label = { Text(tag, maxLines = 1) },
+                        )
+                    }
+                }
+            }
+            Text(
+                "Type -word and press search to leave a word out. Mute words everywhere in Settings.",
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(16.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun RemoveChip(label: String, onRemove: () -> Unit) {
+    Icon(
+        Icons.Default.Close,
+        contentDescription = "Remove $label",
+        modifier = Modifier.size(18.dp).clickable(onClick = onRemove),
+    )
 }
 
 /** Tag chips that steer My Mix, with the pinned ones first. */
@@ -221,6 +402,7 @@ private fun MixHeader(viewModel: MainViewModel) {
 fun ListingScreen(viewModel: MainViewModel, feed: Feed) {
     val taste by viewModel.library.taste.collectAsStateWithLifecycle()
     val tag = (feed.source as? FeedSource.Tag)?.name
+    val search = searchOf(feed.source)
 
     Scaffold(
         topBar = {
@@ -248,6 +430,11 @@ fun ListingScreen(viewModel: MainViewModel, feed: Feed) {
                             Icon(Icons.Default.Block, contentDescription = "Hide this tag")
                         }
                     }
+                    if (search != null) {
+                        IconButton(onClick = { viewModel.editSearch(feed) }) {
+                            Icon(Icons.Default.Edit, contentDescription = "Change this search")
+                        }
+                    }
                     IconButton(onClick = { viewModel.shufflePlay(feed) }) {
                         Icon(Icons.Default.Shuffle, contentDescription = "Shuffle this feed")
                     }
@@ -257,6 +444,7 @@ fun ListingScreen(viewModel: MainViewModel, feed: Feed) {
         },
     ) { padding ->
         Column(Modifier.padding(padding).fillMaxSize()) {
+            if (search != null) NarrowRow(viewModel, feed, search)
             if (feed.source is FeedSource.SavedList) {
                 val settings by viewModel.library.settings.collectAsStateWithLifecycle()
                 FilterChip(
@@ -269,6 +457,26 @@ fun ListingScreen(viewModel: MainViewModel, feed: Feed) {
             Box(Modifier.weight(1f)) {
                 FeedGrid(viewModel, feed)
             }
+        }
+    }
+}
+
+/** Tags that go with a search's results, each one a tap away from narrowing it further. */
+@Composable
+private fun NarrowRow(viewModel: MainViewModel, feed: Feed, search: SearchQuery) {
+    val related by feed.relatedTags.collectAsStateWithLifecycle()
+    val inSearch = (search.tags + search.exclude).map { it.lowercase() }.toSet()
+    val tags = related.filterNot { it.lowercase() in inSearch }.take(NARROW_TAGS)
+    if (tags.isEmpty()) return
+    LazyRow(
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        contentPadding = PaddingValues(horizontal = 8.dp),
+    ) {
+        items(tags, key = { it }) { tag ->
+            SuggestionChip(
+                onClick = { viewModel.narrow(feed, tag) },
+                label = { Text("+ $tag", maxLines = 1) },
+            )
         }
     }
 }
@@ -431,17 +639,30 @@ private fun GifCard(gif: Gif, aspectRatio: Float, onClick: () -> Unit) {
 }
 
 @Composable
-private fun RecentSearches(viewModel: MainViewModel, onPick: (String) -> Unit) {
+private fun RecentSearches(viewModel: MainViewModel, onPick: (SearchQuery) -> Unit) {
     val searches by viewModel.library.searches.collectAsStateWithLifecycle()
     if (searches.isEmpty()) return
-    searches.take(VISIBLE_SEARCHES).forEach { text ->
-        Text(
-            text,
+    Text(
+        "Recent",
+        style = MaterialTheme.typography.titleSmall,
+        modifier = Modifier.padding(start = 16.dp, top = 8.dp),
+    )
+    searches.take(VISIBLE_SEARCHES).map(SearchQuery::fromRecent).filterNot { it.isEmpty }.forEach { search ->
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable { onPick(text) }
+                .clickable { onPick(search) }
                 .padding(horizontal = 16.dp, vertical = 12.dp),
-        )
+        ) {
+            Icon(Icons.Default.History, contentDescription = null, modifier = Modifier.size(18.dp))
+            Text(
+                search.title + if (search.order != SearchOrder.Trending) " · ${search.order.label}" else "",
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(start = 12.dp),
+            )
+        }
     }
     TextButton(onClick = viewModel.library::clearSearches) { Text("Clear recent searches") }
     HorizontalDivider()
@@ -535,3 +756,5 @@ fun Message(text: String, action: @Composable () -> Unit = {}) {
 
 private const val LOAD_AHEAD = 12
 private const val VISIBLE_SEARCHES = 6
+private const val POPULAR_TAGS = 30
+private const val NARROW_TAGS = 25

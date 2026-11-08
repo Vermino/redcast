@@ -28,6 +28,8 @@ class RedgifsApi(private val session: Session, private val http: OkHttpClient) {
                 "v2/gifs/search?query=${Uri.encode(source.query)}&order=trending&$paging"
             is FeedSource.Tag ->
                 "v2/gifs/search?tags=${Uri.encode(source.name)}&order=trending&$paging"
+            is FeedSource.Query ->
+                "v2/gifs/search?${source.search.apiParams(Uri::encode)}&$paging"
             is FeedSource.CreatorGifs ->
                 "v2/users/${Uri.encode(source.userName)}/search?order=${source.order}&$paging"
         }

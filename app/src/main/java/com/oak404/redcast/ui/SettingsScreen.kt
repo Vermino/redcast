@@ -18,7 +18,15 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
@@ -135,6 +143,19 @@ fun SettingsScreen(viewModel: MainViewModel, appLock: AppLock) {
                 }
             }
 
+            Section("Muted words") {
+                MuteWordField(viewModel::muteWord)
+                if (taste.mutedWords.isEmpty()) {
+                    Row(
+                        "No muted words",
+                        "Clips with a muted word in a tag or description never show up, in any feed or search",
+                    )
+                }
+                taste.mutedWords.sorted().forEach { word ->
+                    Hidden(word) { viewModel.unmuteWord(word) }
+                }
+            }
+
             Section("Hidden") {
                 if (taste.hiddenTags.isEmpty() && taste.hiddenCreators.isEmpty() && taste.hiddenGifs.isEmpty()) {
                     Row("Nothing hidden", "Hide clips, creators or tags from their menus, or swipe left")
@@ -225,6 +246,30 @@ private fun Toggle(
         trailingContent = { Switch(checked = checked, onCheckedChange = null, enabled = enabled) },
         colors = rowColors,
         modifier = Modifier.clickable(enabled = enabled) { onChange(!checked) },
+    )
+}
+
+@Composable
+private fun MuteWordField(onMute: (String) -> Unit) {
+    var text by rememberSaveable { mutableStateOf("") }
+    val submit = {
+        if (text.isNotBlank()) onMute(text)
+        text = ""
+    }
+    OutlinedTextField(
+        value = text,
+        onValueChange = { text = it },
+        label = { Text("Mute a word or phrase") },
+        placeholder = { Text("e.g. gay") },
+        singleLine = true,
+        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+        keyboardActions = KeyboardActions(onDone = { submit() }),
+        trailingIcon = {
+            IconButton(onClick = submit, enabled = text.isNotBlank()) {
+                Icon(Icons.Default.Add, contentDescription = "Mute")
+            }
+        },
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
     )
 }
 

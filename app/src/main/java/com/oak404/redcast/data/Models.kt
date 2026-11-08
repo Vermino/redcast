@@ -16,6 +16,7 @@ data class Gif(
     val height: Int = 0,
     val likes: Long = 0,
     val promoted: Boolean = false,
+    val description: String = "",
 ) {
     /** The API's own shape, so saved lists can be read back with [parseGif]. */
     fun toJson(): JSONObject = JSONObject()
@@ -28,6 +29,7 @@ data class Gif(
         .put("likes", likes)
         .put("promoted", promoted)
         .put("tags", JSONArray(tags))
+        .put("description", description)
         .put(
             "urls",
             JSONObject()
@@ -53,7 +55,8 @@ data class Suggestion(val text: String, val isTag: Boolean)
 
 data class TrendingTag(val name: String, val count: Long)
 
-data class GifPage(val gifs: List<Gif>, val pages: Int)
+/** [relatedTags] are the tags the site says go with this listing, for narrowing it down. */
+data class GifPage(val gifs: List<Gif>, val pages: Int, val relatedTags: List<String> = emptyList())
 
 /** A feed the app can page through. Each one maps to a single API listing. */
 sealed interface FeedSource {
@@ -99,6 +102,13 @@ sealed interface FeedSource {
         override val likeSourceId = userName
     }
 
+    /** Several tags at once, with words to leave out, optional text and a sort order. */
+    data class Query(val search: SearchQuery) : ApiFeed {
+        override val title = search.title
+        override val likeSource = "search-gifs"
+        override val likeSourceId = search.title
+    }
+
     data object Mix : FeedSource {
         override val title = "My Mix"
     }
@@ -126,7 +136,12 @@ internal fun parseGifPage(json: JSONObject): GifPage {
             parseGif(array.getJSONObject(i))?.let(::add)
         }
     }
-    return GifPage(gifs, json.optInt("pages", 0))
+    val related = json.optJSONArray("tags")
+    return GifPage(
+        gifs,
+        json.optInt("pages", 0),
+        if (related == null) emptyList() else List(related.length()) { related.optString(it) }.filter { it.isNotEmpty() },
+    )
 }
 
 /** Returns null for anything that isn't a plain playable video: images, galleries and ads. */
@@ -153,6 +168,7 @@ internal fun parseGif(json: JSONObject): Gif? {
         height = json.optInt("height"),
         likes = json.optLong("likes"),
         promoted = json.optBoolean("promoted", false),
+        description = if (json.isNull("description")) "" else json.optString("description"),
     )
 }
 

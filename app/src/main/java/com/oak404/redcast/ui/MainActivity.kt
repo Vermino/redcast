@@ -114,11 +114,12 @@ private fun Root(viewModel: MainViewModel, appLock: AppLock) {
     val route = viewModel.backStack.lastOrNull()
     BackHandler(enabled = route != null) { viewModel.back() }
 
-    when (route) {
+    // The search bar lives on Home, but changing a search can open it from any screen.
+    when (val shown = if (viewModel.searching) null else route) {
         null -> HomeScreen(viewModel, appLock)
-        is Route.Listing -> ListingScreen(viewModel, route.feed)
-        is Route.Creator -> CreatorScreen(viewModel, route)
-        is Route.Player -> PlayerScreen(viewModel, route.feed, route.startIndex)
+        is Route.Listing -> ListingScreen(viewModel, shown.feed)
+        is Route.Creator -> CreatorScreen(viewModel, shown)
+        is Route.Player -> PlayerScreen(viewModel, shown.feed, shown.startIndex)
         Route.Settings -> SettingsScreen(viewModel, appLock)
     }
     UpdateDialog(viewModel)

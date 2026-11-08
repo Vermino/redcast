@@ -24,7 +24,10 @@ import com.oak404.redcast.data.Release
 import com.oak404.redcast.data.isNewer
 import com.oak404.redcast.data.Settings
 import com.oak404.redcast.data.Signal
+import com.oak404.redcast.data.SearchQuery
 import com.oak404.redcast.data.Suggestion
+import com.oak404.redcast.data.normalizeWord
+import com.oak404.redcast.data.searchOf
 import com.oak404.redcast.data.TrendingTag
 import com.oak404.redcast.data.videoUrl
 import kotlinx.coroutines.Dispatchers
@@ -169,19 +172,58 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun search(query: String) {
-        val text = query.trim()
+    /** Whether the search bar is open, and the tags and words being put together in it. */
+    var searching by mutableStateOf(false)
+    var draft by mutableStateOf(SearchQuery())
+
+    fun openSearch(start: SearchQuery = SearchQuery()) {
+        draft = start
+        searching = true
         _suggestions.value = emptyList()
-        if (text.isNotEmpty()) {
-            library.addSearch(text)
-            openListing(FeedSource.Search(text))
+    }
+
+    fun closeSearch() {
+        searching = false
+        draft = SearchQuery()
+        _suggestions.value = emptyList()
+    }
+
+    /** Runs [query], or the draft with whatever is still typed in the box as its text. */
+    fun search(query: SearchQuery) {
+        _suggestions.value = emptyList()
+        val tidy = query.copy(text = query.text.trim())
+        if (tidy.isEmpty) return
+        library.addSearch(tidy.toRecent())
+        closeSearch()
+        openListing(tidy.toSource())
+    }
+
+    /** A tag suggestion joins the draft; anything else is searched as text. */
+    fun pickSuggestion(suggestion: Suggestion, exclude: Boolean = false) {
+        _suggestions.value = emptyList()
+        draft = when {
+            exclude -> draft.withExcluded(suggestion.text)
+            suggestion.isTag -> draft.withTag(suggestion.text)
+            else -> return search(draft.copy(text = suggestion.text))
         }
     }
 
-    fun openSuggestion(suggestion: Suggestion) {
-        _suggestions.value = emptyList()
-        library.addSearch(suggestion.text)
-        openListing(if (suggestion.isTag) FeedSource.Tag(suggestion.text) else FeedSource.Search(suggestion.text))
+    /** Opens the search bar on the search behind [feed], so it can be changed. */
+    fun editSearch(feed: Feed) {
+        val query = searchOf(feed.source) ?: SearchQuery()
+        if (backStack.lastOrNull().let { it is Route.Listing && it.feed === feed }) backStack.removeAt(backStack.lastIndex)
+        openSearch(query)
+    }
+
+    /** Replaces the listing on top with [feed]'s search narrowed by [tag], or with [tag] left out. */
+    fun narrow(feed: Feed, tag: String, exclude: Boolean = false) {
+        val query = searchOf(feed.source) ?: return
+        val narrowed = if (exclude) query.withExcluded(tag) else query.withTag(tag)
+        library.addSearch(narrowed.toRecent())
+        val top = backStack.lastIndex
+        val route = Route.Listing(feeds.create(narrowed.toSource()))
+        if (backStack.getOrNull(top).let { it is Route.Listing && it.feed === feed }) backStack[top] = route
+        else backStack += route
     }
 
     fun onQueryChanged(query: String) {
@@ -202,6 +244,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun openTag(tag: String) = openListing(FeedSource.Tag(tag))
+
+    fun muteWord(text: String) {
+        val word = normalizeWord(text)
+        if (word.isNotEmpty()) library.updateTaste { it.copy(mutedWords = it.mutedWords + word) }
+    }
+
+    fun unmuteWord(word: String) = library.updateTaste { it.copy(mutedWords = it.mutedWords - word) }
 
     fun openSimilar(gif: Gif) = openListing(FeedSource.Similar(gif))
 

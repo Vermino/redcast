@@ -19,12 +19,18 @@ data class Taste(
     val hiddenGifs: Set<String> = emptySet(),
     val hiddenCreators: Set<String> = emptySet(),
     val hiddenTags: Set<String> = emptySet(),
+    val mutedWords: Set<String> = emptySet(),
     val seen: List<String> = emptyList(),
 ) {
     val isEmpty: Boolean get() = tagScores.isEmpty() && pinnedTags.isEmpty()
 
+    private val muted by lazy { WordFilter(mutedWords) }
+
     fun hides(gif: Gif): Boolean =
-        gif.id in hiddenGifs || gif.userName in hiddenCreators || gif.tags.any { it in hiddenTags }
+        gif.id in hiddenGifs || gif.userName in hiddenCreators || gif.tags.any { it in hiddenTags } ||
+            muted.matches(gif)
+
+    fun mutes(tag: String): Boolean = muted.matches(tag)
 
     fun record(gif: Gif, signal: Signal): Taste = copy(
         tagScores = gif.tags.fold(tagScores) { scores, tag -> scores.bump(tag, signal.weight) },
@@ -39,7 +45,7 @@ data class Taste(
 
     /** Pinned tags first, then the strongest learned ones. */
     fun topTags(count: Int): List<String> =
-        (pinnedTags + strongest(tagScores)).distinct().filterNot { it in hiddenTags }.take(count)
+        (pinnedTags + strongest(tagScores)).distinct().filterNot { it in hiddenTags || mutes(it) }.take(count)
 
     fun topCreators(count: Int): List<String> =
         strongest(creatorScores).filterNot { it in hiddenCreators }.take(count)
@@ -88,3 +94,24 @@ internal object MixRanker {
             }
     }
 }
+
+/**
+ * Whole words or phrases to keep out, in any case: "gay" catches the tags "Gay" and "Gay Porn"
+ * and a description that says it, but not a longer word that happens to start with the same letters.
+ */
+class WordFilter(words: Collection<String>) {
+
+    private val pattern: Regex? = words.map { it.trim() }.filter { it.isNotEmpty() }.takeIf { it.isNotEmpty() }
+        ?.joinToString("|", """(?<![\p{L}\p{N}])(?:""", """)(?![\p{L}\p{N}])""") { Regex.escape(it) }
+        ?.let { Regex(it, RegexOption.IGNORE_CASE) }
+
+    val isEmpty: Boolean get() = pattern == null
+
+    fun matches(text: String): Boolean = pattern?.containsMatchIn(text) ?: false
+
+    fun matches(gif: Gif): Boolean =
+        pattern != null && (gif.tags.any { matches(it) } || matches(gif.description))
+}
+
+/** A muted word as typed, tidied so the same word isn't kept twice. */
+fun normalizeWord(text: String): String = text.trim().replace(Regex("""\s+"""), " ").lowercase()

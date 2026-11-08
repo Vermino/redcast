@@ -177,6 +177,7 @@ internal fun Taste.toJson(): JSONObject = JSONObject()
     .put("hiddenGifs", JSONArray(hiddenGifs))
     .put("hiddenCreators", JSONArray(hiddenCreators))
     .put("hiddenTags", JSONArray(hiddenTags))
+    .put("mutedWords", JSONArray(mutedWords))
     .put("seen", JSONArray(seen))
 
 internal fun tasteFrom(json: JSONObject) = Taste(
@@ -186,6 +187,7 @@ internal fun tasteFrom(json: JSONObject) = Taste(
     hiddenGifs = json.strings("hiddenGifs").toSet(),
     hiddenCreators = json.strings("hiddenCreators").toSet(),
     hiddenTags = json.strings("hiddenTags").toSet(),
+    mutedWords = json.strings("mutedWords").toSet(),
     seen = json.strings("seen"),
 )
 
