@@ -116,11 +116,6 @@ fun SettingsScreen(viewModel: MainViewModel, appLock: AppLock) {
                     viewModel.updateSettings { it.copy(quality = choice) }
                 }
                 Toggle(
-                    "Swipe to curate",
-                    "Right keeps a clip and stays on it, left passes and moves on",
-                    settings.swipeToCurate,
-                ) { on -> viewModel.updateSettings { it.copy(swipeToCurate = on) } }
-                Toggle(
                     "Show promoted clips",
                     "Promoted clips help support RedGIFs and are marked in the player",
                     settings.showPromoted,
@@ -164,7 +159,7 @@ fun SettingsScreen(viewModel: MainViewModel, appLock: AppLock) {
 
             Section("Hidden") {
                 if (taste.hiddenTags.isEmpty() && taste.hiddenCreators.isEmpty() && taste.hiddenGifs.isEmpty()) {
-                    Row("Nothing hidden", "Hide clips, creators or tags from their menus, or swipe left")
+                    Row("Nothing hidden", "Hide clips, creators or tags from their menus")
                 }
                 taste.hiddenTags.sorted().forEach { tag ->
                     Hidden("Tag: $tag") { viewModel.unhideTag(tag) }

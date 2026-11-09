@@ -58,7 +58,7 @@ class Library(context: Context) {
         get() = prefs.getString(KEY_SKIPPED_VERSION, null)
         set(value) = prefs.edit().putString(KEY_SKIPPED_VERSION, value).apply()
 
-    var swipeHintSeen: Boolean
+    var sortHintSeen: Boolean
         get() = prefs.getBoolean(KEY_SWIPE_HINT, false)
         set(value) = prefs.edit().putBoolean(KEY_SWIPE_HINT, value).apply()
 

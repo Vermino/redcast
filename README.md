@@ -12,7 +12,6 @@ working at any time.
 - **Sign in** with your own RedGIFs account, or browse as a guest
 - **Chromecast** with a continuous queue: clips play one after another, and the phone can be locked
 - **Autoscroll** to the next clip, or loop the current one
-- **Swipe to curate:** right keeps a clip and keeps playing it, left passes and moves on; both teach My Mix
 - **My Mix:** a feed ranked on your phone from what you like, finish, skip and pin
 - **Feeds:** Trending, Explore, For You, Liked, Following, creator pages and tag pages
 - **Search builder:** several tags at once, words to leave out, and a sort order, narrowed further

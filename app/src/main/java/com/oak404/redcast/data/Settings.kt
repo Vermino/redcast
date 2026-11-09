@@ -31,7 +31,6 @@ data class Settings(
     val columns: Int = 3,
     val defaultTab: String = "Mix",
     val showPromoted: Boolean = true,
-    val swipeToCurate: Boolean = true,
     val listDiscovery: Boolean = true,
     val checkForUpdates: Boolean = true,
 ) {
@@ -42,7 +41,6 @@ data class Settings(
         .put("columns", columns)
         .put("defaultTab", defaultTab)
         .put("showPromoted", showPromoted)
-        .put("swipeToCurate", swipeToCurate)
         .put("listDiscovery", listDiscovery)
         .put("checkForUpdates", checkForUpdates)
 }
@@ -56,7 +54,6 @@ internal fun settingsFrom(json: JSONObject): Settings {
         columns = json.optInt("columns", defaults.columns).coerceIn(2, 4),
         defaultTab = json.optString("defaultTab").ifEmpty { defaults.defaultTab },
         showPromoted = json.optBoolean("showPromoted", defaults.showPromoted),
-        swipeToCurate = json.optBoolean("swipeToCurate", defaults.swipeToCurate),
         listDiscovery = json.optBoolean("listDiscovery", defaults.listDiscovery),
         checkForUpdates = json.optBoolean("checkForUpdates", defaults.checkForUpdates),
     )

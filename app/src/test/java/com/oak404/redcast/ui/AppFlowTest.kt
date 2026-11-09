@@ -5,6 +5,8 @@ import android.os.Looper
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.junit4.v2.createEmptyComposeRule
 import androidx.compose.ui.test.longClick
+import androidx.compose.ui.test.swipeLeft
+import androidx.compose.ui.test.swipeRight
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onFirst
@@ -104,6 +106,28 @@ class AppFlowTest {
         // The next clip is Blonde too, so the player goes on to the one after it.
         waitForText("user2")
         assertTrue("blonde" in app.library.taste.value.mutedWords)
+    }
+
+    @Test
+    fun swipingSidewaysDoesNothingButHoldingSortsIntoAList() {
+        compose.onNodeWithText("Trending").performClick()
+        waitFor { compose.onAllNodesWithContentDescription("Video by user0").fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithContentDescription("Video by user0").performClick()
+        waitForText("user0")
+
+        compose.onRoot().performTouchInput { swipeLeft() }
+        compose.onRoot().performTouchInput { swipeRight() }
+        waitForText("user0")
+        assertTrue(app.library.taste.value.hiddenGifs.isEmpty())
+        assertTrue(app.library.lists.value.isEmpty())
+
+        compose.onRoot().performTouchInput {
+            down(center)
+            advanceEventTime(viewConfiguration.longPressTimeoutMillis + 100)
+            moveBy(androidx.compose.ui.geometry.Offset(1f, 1f))
+        }
+        waitForText("Drag onto a list")
+        compose.onRoot().performTouchInput { up() }
     }
 
     @Test

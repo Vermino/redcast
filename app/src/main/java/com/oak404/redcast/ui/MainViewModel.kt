@@ -527,17 +527,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun onClipSkipped(gif: Gif) = library.updateTaste { it.record(gif, Signal.Skipped) }
 
-    /** Swipe right: a like when signed in, otherwise a local save. Either way, it teaches My Mix. */
-    fun keep(gif: Gif, from: Feed, index: Int) {
-        when {
-            session.signedIn.value -> if (gif.id !in _likedIds.value) toggleLike(gif, from, index)
-            else -> {
-                library.updateTaste { it.record(gif, Signal.Liked) }
-                library.addToList(KEPT_LIST, gif)
-            }
-        }
-    }
-
     /** Into a collection, which also counts toward My Mix. */
     fun saveTo(list: String, gif: Gif) {
         val already = library.lists.value[list].orEmpty().any { it.id == gif.id }
@@ -551,11 +540,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val top = backStack.lastIndex
         val route = backStack.getOrNull(top) as? Route.Listing ?: return
         if (route.feed.source is FeedSource.SavedList) backStack[top] = Route.Listing(feeds.create(route.feed.source))
-    }
-
-    /** Swipe left: drops the clip and steers My Mix away from its tags and creator. */
-    fun pass(gif: Gif) {
-        library.updateTaste { it.record(gif, Signal.Passed).copy(hiddenGifs = it.hiddenGifs + gif.id) }
     }
 
     fun togglePinned(tag: String) {
@@ -678,7 +662,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private companion object {
-        const val KEPT_LIST = "Kept"
         const val UPDATE_CHECK_EVERY_MS = 12 * 60 * 60 * 1000L
         const val CREATOR_ORDER = "latest"
         const val MAX_FOLLOWING_PAGES = 10

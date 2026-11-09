@@ -2,7 +2,6 @@ package com.oak404.redcast.ui
 
 import android.view.LayoutInflater
 import androidx.annotation.OptIn
-import androidx.compose.animation.core.Animatable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -10,7 +9,6 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.awaitHorizontalTouchSlopOrCancellation
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.offset
@@ -81,7 +79,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -112,7 +109,6 @@ import coil.request.ImageRequest
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
-import kotlin.math.abs
 
 @Composable
 fun PlayerScreen(viewModel: MainViewModel, feed: Feed, startIndex: Int) {
@@ -137,16 +133,13 @@ fun PlayerScreen(viewModel: MainViewModel, feed: Feed, startIndex: Int) {
     var firstSettle by remember { mutableStateOf(true) }
     var savingGif by remember { mutableStateOf<Gif?>(null) }
     val settings by viewModel.library.settings.collectAsStateWithLifecycle()
-    val swipeEnabled = settings.swipeToCurate
-    var swipeHint by remember { mutableStateOf(!viewModel.library.swipeHintSeen) }
+    var sortHint by remember { mutableStateOf(!viewModel.library.sortHintSeen) }
     val lists by viewModel.library.lists.collectAsStateWithLifecycle()
     var screen by remember { mutableStateOf(IntSize.Zero) }
     var sorting by remember { mutableStateOf<Gif?>(null) }
     var finger by remember { mutableStateOf(Offset.Zero) }
     val reach = with(LocalDensity.current) { SORT_REACH.toPx() }
     val targets = remember(lists.keys, screen) { sortTargets(lists.keys.toList(), screen.width, screen.height) }
-    // A swipe already said how this clip went, so leaving it early isn't also a skip.
-    val judged = remember { HashSet<String>() }
     var lastSettled by remember { mutableIntStateOf(startIndex) }
     var tagsFor by remember { mutableStateOf<Gif?>(null) }
 
@@ -227,7 +220,7 @@ fun PlayerScreen(viewModel: MainViewModel, feed: Feed, startIndex: Int) {
         val playing = player.currentMediaItemIndex
         if (page != playing) {
             if (!casting && player.currentPosition < SKIP_THRESHOLD_MS) {
-                gifs.getOrNull(playing)?.takeIf { it.id !in judged }?.let(viewModel::onClipSkipped)
+                gifs.getOrNull(playing)?.let(viewModel::onClipSkipped)
             }
             player.seekTo(page, 0L)
         }
@@ -284,22 +277,13 @@ fun PlayerScreen(viewModel: MainViewModel, feed: Feed, startIndex: Int) {
             if (pager.currentPage + 1 < gifs.size) pager.animateScrollToPage(pager.currentPage + 1)
         }
     }
-    var keptFlash by remember { mutableIntStateOf(0) }
-    val judge: (Gif, Boolean, (Gif) -> Unit) -> Unit = { gif, moveOn, verdict ->
-        judged += gif.id
-        verdict(gif)
-        swipeHint = false
-        viewModel.library.swipeHintSeen = true
-        if (moveOn) goToNext()
-    }
-
     val drop: () -> Unit = {
         val gif = sorting
         val target = targetAt(targets, finger.x, finger.y, reach)
         sorting = null
         if (gif != null && target != null) {
-            swipeHint = false
-            viewModel.library.swipeHintSeen = true
+            sortHint = false
+            viewModel.library.sortHintSeen = true
             if (target.isNew) savingGif = gif else viewModel.saveTo(target.label, gif)
         }
     }
@@ -321,13 +305,6 @@ fun PlayerScreen(viewModel: MainViewModel, feed: Feed, startIndex: Int) {
                 onDoubleTap = {
                     if (signedIn && gif.id !in likedIds) viewModel.toggleLike(gif, feed, page)
                 },
-                swipeEnabled = swipeEnabled,
-                // Keeping stays on the clip; passing moves on.
-                onKeep = {
-                    judge(gif, false) { viewModel.keep(it, feed, page) }
-                    keptFlash++
-                },
-                onPass = { judge(gif, true, viewModel::pass) },
                 onHold = { at ->
                     sorting = gif
                     finger = at
@@ -359,30 +336,9 @@ fun PlayerScreen(viewModel: MainViewModel, feed: Feed, startIndex: Int) {
                 LinearProgressIndicator(Modifier.fillMaxWidth().testTag("finding-similar"))
             }
             Box(Modifier.weight(1f).fillMaxWidth()) {
-                if (keptFlash > 0) {
-                    var visible by remember { mutableStateOf(false) }
-                    LaunchedEffect(keptFlash) {
-                        visible = true
-                        delay(KEPT_FLASH_MS)
-                        visible = false
-                    }
-                    if (visible) {
-                        Row(
-                            Modifier
-                                .align(Alignment.Center)
-                                .background(Color(0xCC000000), RoundedCornerShape(20.dp))
-                                .padding(horizontal = 16.dp, vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Icon(Icons.Default.Favorite, contentDescription = null, tint = Color(0xFF4CAF7A))
-                            Spacer(Modifier.width(8.dp))
-                            Text("Kept", color = Color.White, style = MaterialTheme.typography.titleMedium)
-                        }
-                    }
-                }
-                if (swipeHint && swipeEnabled) {
+                if (sortHint) {
                     Text(
-                        "Swipe right to keep, left to pass. Hold to sort into a list.",
+                        "Hold a clip to sort it into a list.",
                         color = Color.White,
                         modifier = Modifier
                             .align(Alignment.TopCenter)
@@ -703,25 +659,16 @@ private fun GifPage(
     player: ExoPlayer?,
     onTap: () -> Unit,
     onDoubleTap: () -> Unit,
-    swipeEnabled: Boolean,
-    onKeep: () -> Unit,
-    onPass: () -> Unit,
     onHold: (Offset) -> Unit,
     onHoldMove: (Offset) -> Unit,
     onRelease: () -> Unit,
 ) {
     val tap by rememberUpdatedState(onTap)
     val doubleTap by rememberUpdatedState(onDoubleTap)
-    val keep by rememberUpdatedState(onKeep)
-    val pass by rememberUpdatedState(onPass)
     val hold by rememberUpdatedState(onHold)
     val holdMove by rememberUpdatedState(onHoldMove)
     val release by rememberUpdatedState(onRelease)
     val haptics = LocalHapticFeedback.current
-    val scope = rememberCoroutineScope()
-    val offset = remember { Animatable(0f) }
-    var pageWidth by remember { mutableFloatStateOf(1f) }
-    val swipe = offset.value / pageWidth
 
     // The one player hops between pages and briefly shows whatever it last drew, so the video
     // stays hidden behind this clip's poster until the player has drawn a frame of this clip.
@@ -748,64 +695,26 @@ private fun GifPage(
             .pointerInput(Unit) {
                 detectTapGestures(onTap = { tap() }, onDoubleTap = { doubleTap() }, onLongPress = {})
             }
-            // Sideways is a swipe, holding still is sort, and up or down is left to the pager.
-            .pointerInput(swipeEnabled) {
-                pageWidth = size.width.toFloat()
+            // Holding still is sort; lifting or moving first (the pager's swipe) is not.
+            .pointerInput(Unit) {
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
-                    var decided = false
-                    val sideways = withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis) {
-                        val change = if (swipeEnabled) {
-                            awaitHorizontalTouchSlopOrCancellation(down.id) { change, _ -> change.consume() }
-                        } else {
-                            waitForUpOrCancellation()
-                            null
-                        }
-                        decided = true
-                        change
+                    var endedEarly = false
+                    withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis) {
+                        waitForUpOrCancellation()
+                        endedEarly = true
                     }
-                    when {
-                        sideways != null -> {
-                            while (true) {
-                                val change = awaitPointerEvent().changes.firstOrNull { it.id == down.id } ?: break
-                                if (!change.pressed) break
-                                val dx = change.position.x - change.previousPosition.x
-                                change.consume()
-                                scope.launch { offset.snapTo(offset.value + dx) }
-                            }
-                            scope.launch {
-                                val verdict = offset.value / size.width
-                                if (abs(verdict) < SWIPE_FRACTION) {
-                                    offset.animateTo(0f)
-                                    return@launch
-                                }
-                                if (verdict > 0) {
-                                    offset.animateTo(0f)
-                                    keep()
-                                } else {
-                                    offset.animateTo(size.width * -1.5f)
-                                    pass()
-                                    offset.snapTo(0f)
-                                }
-                            }
-                        }
-                        !decided -> {
-                            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                            hold(down.position)
-                            while (true) {
-                                val change = awaitPointerEvent().changes.firstOrNull { it.id == down.id } ?: break
-                                change.consume()
-                                if (!change.pressed) break
-                                holdMove(change.position)
-                            }
-                            release()
-                        }
+                    if (endedEarly) return@awaitEachGesture
+                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                    hold(down.position)
+                    while (true) {
+                        val change = awaitPointerEvent().changes.firstOrNull { it.id == down.id } ?: break
+                        change.consume()
+                        if (!change.pressed) break
+                        holdMove(change.position)
                     }
+                    release()
                 }
-            }
-            .graphicsLayer {
-                translationX = offset.value
-                rotationZ = swipe * MAX_TILT_DEGREES
             },
     ) {
         // Sits behind the transparent shutter until the first video frame arrives.
@@ -823,17 +732,6 @@ private fun GifPage(
                 update = { it.player = player },
                 onRelease = { it.player = null },
                 modifier = Modifier.fillMaxSize().alpha(if (showingThisClip) 1f else 0f),
-            )
-        }
-        if (swipe != 0f) {
-            Text(
-                if (swipe > 0) "KEEP" else "PASS",
-                color = if (swipe > 0) Color(0xFF4CAF7A) else Color(0xFFE5383B),
-                style = MaterialTheme.typography.displayMedium,
-                modifier = Modifier
-                    .align(if (swipe > 0) Alignment.TopStart else Alignment.TopEnd)
-                    .padding(horizontal = 24.dp, vertical = 96.dp)
-                    .alpha((abs(swipe) / SWIPE_FRACTION).coerceAtMost(1f)),
             )
         }
     }
@@ -871,8 +769,6 @@ private fun mediaItem(gif: Gif, url: String): MediaItem =
     MediaItem.Builder().setUri(url).setMediaId(gif.id).build()
 
 private const val LOAD_AHEAD = 6
-private const val SWIPE_FRACTION = 0.3f
-private const val MAX_TILT_DEGREES = 12f
 private const val KEPT_FLASH_MS = 1_200L
 private val SORT_BUBBLE = 92.dp
 private val SORT_THUMB = 72.dp
