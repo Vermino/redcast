@@ -3,6 +3,9 @@ package com.oak404.redcast.data
 import android.net.Uri
 import com.oak404.redcast.auth.Session
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -18,7 +21,16 @@ class SignInRequiredException : IOException("Sign in to see this")
 
 class RedgifsApi(private val session: Session, private val http: OkHttpClient) {
 
-    suspend fun feed(source: ApiFeed, page: Int, count: Int = PAGE_SIZE): GifPage {
+    private val _changed = MutableStateFlow<ApiChangedException?>(null)
+
+    /** The last reply Redcast couldn't read, so the app can say RedGIFs changed something. */
+    val changed: StateFlow<ApiChangedException?> = _changed.asStateFlow()
+
+    fun dismissChanged() {
+        _changed.value = null
+    }
+
+    suspend fun feed(source: ApiFeed, page: Int, count: Int = PAGE_SIZE): GifPage = reading {
         val paging = "count=$count&page=$page"
         val path = when (source) {
             FeedSource.Trending -> "v2/feeds/trending/popular?$paging"
@@ -33,27 +45,47 @@ class RedgifsApi(private val session: Session, private val http: OkHttpClient) {
             is FeedSource.CreatorGifs ->
                 "v2/users/${Uri.encode(source.userName)}/search?order=${source.order}&$paging"
         }
-        return parseGifPage(call(path, requiresUser = source.requiresUser))
+        parseGifPage(call(path, requiresUser = source.requiresUser))
     }
 
-    suspend fun recommended(gifId: String): List<Gif> =
+    /** How many clips match [query], capped by the site at 10,000. One tiny request. */
+    suspend fun count(query: SearchQuery): Int = reading {
+        val json = call("v2/gifs/search?${query.apiParams(Uri::encode)}&count=1&page=1", requiresUser = false)
+        if (!json.has("total") && !json.has("pages")) throw ApiChangedException("search results")
+        json.optInt("total", json.optInt("pages"))
+    }
+
+    suspend fun recommended(gifId: String): List<Gif> = reading {
         parseGifPage(call("v2/recommend/gifs/${Uri.encode(gifId)}/quick", requiresUser = false)).gifs
+    }
 
     suspend fun profile(userName: String): Profile =
         parseProfile(call("v1/users/${Uri.encode(userName)}", requiresUser = false))
 
-    suspend fun trendingTags(): List<TrendingTag> {
-        val tags = call("v2/tags/trending", requiresUser = false).optJSONArray("tags") ?: return emptyList()
-        return List(tags.length()) { tags.getJSONObject(it) }
+    suspend fun trendingTags(): List<TrendingTag> = reading {
+        val tags = call("v2/tags/trending", requiresUser = false).optJSONArray("tags")
+            ?: throw ApiChangedException("tag list")
+        List(tags.length()) { tags.getJSONObject(it) }
             .map { TrendingTag(it.optString("name"), it.optLong("count")) }
     }
 
-    suspend fun suggestions(query: String): List<Suggestion> {
+    suspend fun suggestions(query: String, limit: Int = MAX_SUGGESTIONS): List<Suggestion> = reading {
         val list = callArray("v2/search/suggest?query=${Uri.encode(query)}")
-        return List(list.length()) { list.getJSONObject(it) }
-            .map { Suggestion(it.optString("text"), it.optString("type") == "tag") }
+        List(list.length()) { list.optJSONObject(it) ?: JSONObject() }
+            .map { Suggestion(it.optString("text"), it.optString("type") == "tag", it.optLong("gifs")) }
             .filter { it.text.isNotEmpty() }
-            .take(MAX_SUGGESTIONS)
+            .take(limit)
+    }
+
+    /** How many clips carry exactly [tag], or null when the site doesn't know the tag. */
+    suspend fun tagSize(tag: String): Long? =
+        suggestions(tag, limit = Int.MAX_VALUE).firstOrNull { it.isTag && it.text.equals(tag, ignoreCase = true) }?.clips
+
+    private inline fun <T> reading(block: () -> T): T = try {
+        block()
+    } catch (e: ApiChangedException) {
+        _changed.value = e
+        throw e
     }
 
     suspend fun setFollowing(userName: String, following: Boolean) {
@@ -99,7 +131,7 @@ class RedgifsApi(private val session: Session, private val http: OkHttpClient) {
     private suspend fun callArray(path: String): JSONArray {
         val reply = send(path, token(requiresUser = false), "GET")
         if (reply.status !in 200..299) reply.unwrap()
-        return JSONArray(reply.text)
+        return runCatching { JSONArray(reply.text) }.getOrNull() ?: throw ApiChangedException("search suggestions")
     }
 
     private suspend fun token(requiresUser: Boolean): String =
@@ -122,9 +154,12 @@ class RedgifsApi(private val session: Session, private val http: OkHttpClient) {
 
     private class Reply(val status: Int, val text: String) {
         fun unwrap(): JSONObject {
-            val json = runCatching { JSONObject(text) }.getOrNull() ?: JSONObject()
-            if (status in 200..299) return json
-            val error = json.optJSONObject("error")
+            val json = runCatching { JSONObject(text) }.getOrNull()
+            if (status in 200..299) {
+                // An empty reply is fine for a like or a follow; one that isn't JSON at all is not.
+                return json ?: if (text.isBlank()) JSONObject() else throw ApiChangedException("replies")
+            }
+            val error = json?.optJSONObject("error")
             throw ApiException(
                 status,
                 error?.optString("code"),

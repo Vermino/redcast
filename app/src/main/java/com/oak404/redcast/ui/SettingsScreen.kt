@@ -61,6 +61,9 @@ fun SettingsScreen(viewModel: MainViewModel, appLock: AppLock) {
     val export = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/json"),
     ) { uri -> uri?.let(viewModel::exportTo) }
+    val import = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri?.let(viewModel::importFrom)
+    }
     val open: (String) -> Unit = { url ->
         context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
     }
@@ -138,8 +141,11 @@ fun SettingsScreen(viewModel: MainViewModel, appLock: AppLock) {
                 Row("Watch history", "Clips you've opened, newest first") { viewModel.openHistory() }
                 Row("Clear watch history", null, viewModel.library::clearHistory)
                 Row("Clear search history", null, viewModel.library::clearSearches)
-                Row("Export my data", "History, lists and settings as a JSON file") {
+                Row("Export my data", "History, lists, searches and settings as a JSON file") {
                     export.launch("redcast-data.json")
+                }
+                Row("Import data", "Adds lists, history, searches and taste from an export. Settings come from the file.") {
+                    import.launch(arrayOf("application/json", "application/octet-stream", "text/*"))
                 }
             }
 

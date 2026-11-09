@@ -28,13 +28,19 @@ import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.viewmodel.initializer
+import androidx.lifecycle.viewmodel.viewModelFactory
 import com.oak404.redcast.auth.LoginActivity
 import kotlinx.coroutines.launch
 
 // AppCompat because the Cast device picker needs a FragmentActivity and an AppCompat theme.
 class MainActivity : AppCompatActivity() {
 
-    private val viewModel: MainViewModel by viewModels()
+    // Built from this activity's own application rather than the default factory's, which keeps
+    // the first application it ever saw; tests start a fresh one for every case.
+    private val viewModel: MainViewModel by viewModels {
+        viewModelFactory { initializer { MainViewModel(application) } }
+    }
     private lateinit var appLock: AppLock
     private val requestNotifications =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) {}

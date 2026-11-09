@@ -76,6 +76,10 @@ data class SearchQuery(
         fun fromRecent(stored: String): SearchQuery {
             if (!stored.startsWith("{")) return SearchQuery(text = stored)
             val json = runCatching { JSONObject(stored) }.getOrNull() ?: return SearchQuery(text = stored)
+            return fromJson(json)
+        }
+
+        fun fromJson(json: JSONObject): SearchQuery {
             return SearchQuery(
                 tags = json.strings("tags"),
                 exclude = json.strings("exclude"),
@@ -96,5 +100,30 @@ fun searchOf(source: FeedSource): SearchQuery? = when (source) {
     is FeedSource.Query -> source.search
     is FeedSource.Tag -> SearchQuery(tags = source.name.split(",").map { it.trim() }.filter { it.isNotEmpty() })
     is FeedSource.Search -> SearchQuery(text = source.query)
+    is FeedSource.Similar -> source.tags.takeIf { it.isNotEmpty() }?.let { SearchQuery(tags = it) }
     else -> null
+}
+
+/** A search kept on the Searches tab. [seenUpTo] is when it was last opened, in Unix seconds. */
+data class SavedSearch(val query: SearchQuery, val seenUpTo: Long) {
+    fun toJson(): JSONObject = JSONObject().put("query", query.toJson()).put("seenUpTo", seenUpTo)
+
+    companion object {
+        fun fromJson(json: JSONObject): SavedSearch? {
+            val query = json.optJSONObject("query")?.let(SearchQuery::fromJson) ?: return null
+            return if (query.isEmpty) null else SavedSearch(query, json.optLong("seenUpTo"))
+        }
+    }
+}
+
+/** Clips posted after [since], from a page sorted newest first. */
+internal fun countNew(newestFirst: List<Gif>, since: Long): Int = newestFirst.count { it.created > since }
+
+/**
+ * A clip's tags, least common first, for finding more like it. Tags too rare to turn anything
+ * up are dropped, and when the sizes are unknown the clip's own order stands.
+ */
+internal fun distinctiveTags(tags: List<String>, sizes: Map<String, Long>, minSize: Long): List<String> {
+    val usable = tags.filter { (sizes[it] ?: 0) >= minSize }.sortedBy { sizes[it] }
+    return usable.ifEmpty { tags }
 }

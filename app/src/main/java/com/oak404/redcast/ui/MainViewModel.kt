@@ -15,7 +15,11 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.oak404.redcast.RedcastApp
+import com.oak404.redcast.data.ApiChangedException
 import com.oak404.redcast.data.Creator
+import com.oak404.redcast.data.NewClips
+import com.oak404.redcast.data.SavedSearch
+import com.oak404.redcast.data.SearchOrder
 import com.oak404.redcast.data.Feed
 import com.oak404.redcast.data.FeedSource
 import com.oak404.redcast.data.Gif
@@ -39,6 +43,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import org.json.JSONException
+import org.json.JSONObject
 import java.io.IOException
 
 sealed interface Route {
@@ -52,6 +59,7 @@ enum class HomeTab(val label: String) {
     Mix("My Mix"),
     Trending("Trending"),
     Explore("Explore"),
+    Searches("Searches"),
     ForYou("For You"),
     Liked("Liked"),
     Following("Following"),
@@ -122,6 +130,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private var suggestJob: Job? = null
 
+    private val _newClips = MutableStateFlow<Map<SearchQuery, NewClips>>(emptyMap())
+
+    /** New clips per saved search, filled in by [refreshNewClips]. */
+    val newClips: StateFlow<Map<SearchQuery, NewClips>> = _newClips.asStateFlow()
+    private var newClipsCheckedAtMs = 0L
+    private var newClipsJob: Job? = null
+
+    /** Set when a reply from RedGIFs no longer has the shape Redcast reads. */
+    val apiChanged: StateFlow<ApiChangedException?> = api.changed
+
+    /** While "more like this" works out which tags to follow. */
+    var findingSimilar by mutableStateOf(false)
+        private set
+
     init {
         checkForUpdates(manual = false)
         viewModelScope.launch {
@@ -149,6 +171,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 // The tag row is a shortcut; My Mix works without it.
             }
         }
+        refreshNewClips()
     }
 
     fun feedFor(tab: HomeTab): Feed = when (tab) {
@@ -252,7 +275,99 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun unmuteWord(word: String) = library.updateTaste { it.copy(mutedWords = it.mutedWords - word) }
 
-    fun openSimilar(gif: Gif) = openListing(FeedSource.Similar(gif))
+    fun muteTag(tag: String) = muteWord(tag)
+
+    /** Follows [gif]'s least common tags, falling back to its first ones if that takes too long. */
+    fun openSimilar(gif: Gif) {
+        if (findingSimilar) return
+        findingSimilar = true
+        viewModelScope.launch {
+            val tags = try {
+                withTimeoutOrNull(SIMILAR_TIMEOUT_MS) { feeds.similarTags(gif) }
+            } catch (_: IOException) {
+                null
+            }
+            findingSimilar = false
+            openListing(FeedSource.Similar(gif, tags ?: gif.tags.take(FALLBACK_SIMILAR_TAGS)))
+        }
+    }
+
+    /** Whether [feed]'s search is on the Searches tab. */
+    fun isSaved(query: SearchQuery?): Boolean =
+        query != null && library.savedSearches.value.any { it.query == query }
+
+    fun toggleSaved(query: SearchQuery) {
+        if (isSaved(query)) {
+            library.unsaveSearch(query)
+            _message.value = "Removed from Searches"
+        } else {
+            library.saveSearch(query, nowSec())
+            _message.value = "Saved to Searches. New clips will show up there."
+        }
+    }
+
+    fun unsave(query: SearchQuery) = library.unsaveSearch(query)
+
+    /** Opens a saved search, newest first when [newestFirst], and counts its clips as seen. */
+    fun openSavedSearch(saved: SavedSearch, newestFirst: Boolean) {
+        library.markSearchSeen(saved.query, nowSec())
+        _newClips.value -= saved.query
+        val query = if (newestFirst) saved.query.copy(order = SearchOrder.Latest) else saved.query
+        openListing(query.toSource())
+    }
+
+    /** Checks each saved search for new clips, at most every few minutes unless [force]d. */
+    fun refreshNewClips(force: Boolean = false) {
+        val saved = library.savedSearches.value
+        val now = System.currentTimeMillis()
+        if (saved.isEmpty() || newClipsJob?.isActive == true) return
+        if (!force && now - newClipsCheckedAtMs < NEW_CLIPS_EVERY_MS) return
+        newClipsCheckedAtMs = now
+        newClipsJob = viewModelScope.launch {
+            saved.forEach { search ->
+                try {
+                    val found = feeds.newClips(search)
+                    _newClips.value = if (found.count > 0) _newClips.value + (search.query to found)
+                    else _newClips.value - search.query
+                } catch (_: IOException) {
+                    // A count is a nicety; the search itself still opens.
+                }
+            }
+        }
+    }
+
+    fun dismissApiChanged() = api.dismissChanged()
+
+    /** Fetches the clips after [index] ahead of time: a few whole ones on Wi-Fi, the starts of two on data. */
+    fun preloadAfter(gifs: List<Gif>, index: Int) {
+        val metered = connectivity().isActiveNetworkMetered
+        val next = gifs.drop(index + 1).take(if (metered) PRELOAD_METERED else PRELOAD_UNMETERED)
+        app.preloader.preload(next.map(::playbackUrl), if (metered) PRELOAD_METERED_BYTES else null)
+    }
+
+    fun stopPreloading() = app.preloader.cancel()
+
+    fun importFrom(uri: Uri) {
+        viewModelScope.launch {
+            _message.value = try {
+                val text = withContext(Dispatchers.IO) {
+                    val input = getApplication<Application>().contentResolver.openInputStream(uri)
+                        ?: throw IOException("Couldn't open that file")
+                    input.use { it.readBytes().decodeToString() }
+                }
+                val result = library.importJson(JSONObject(text))
+                refreshMix()
+                refreshNewClips(force = true)
+                result.summary
+            } catch (_: JSONException) {
+                "That file isn't a Redcast export"
+            } catch (e: IOException) {
+                e.message
+            }
+        }
+    }
+
+    private fun nowSec() = System.currentTimeMillis() / 1000
 
     fun openSavedList(name: String) = openListing(FeedSource.SavedList(name))
 
@@ -339,9 +454,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     /** The file to play on the phone. Chromecast always gets HD. */
     fun playbackUrl(gif: Gif): String {
-        val network = getApplication<Application>().getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-        return gif.videoUrl(library.settings.value.quality, network.isActiveNetworkMetered)
+        return gif.videoUrl(library.settings.value.quality, connectivity().isActiveNetworkMetered)
     }
+
+    private fun connectivity() =
+        getApplication<Application>().getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
 
     fun exportTo(uri: Uri) {
         viewModelScope.launch {
@@ -569,5 +686,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         const val MIN_SUGGEST_LENGTH = 2
         const val SUGGEST_DEBOUNCE_MS = 250L
         const val MS_PER_MINUTE = 60_000L
+        const val SIMILAR_TIMEOUT_MS = 4_000L
+        const val FALLBACK_SIMILAR_TAGS = 2
+        const val NEW_CLIPS_EVERY_MS = 10 * 60 * 1000L
+        const val PRELOAD_UNMETERED = 3
+        const val PRELOAD_METERED = 2
+        const val PRELOAD_METERED_BYTES = 1_500_000L
     }
 }

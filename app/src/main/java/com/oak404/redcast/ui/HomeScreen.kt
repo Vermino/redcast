@@ -8,6 +8,13 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Bookmark
+import androidx.compose.material.icons.filled.BookmarkBorder
+import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.AssistChip
+import androidx.compose.material3.Surface
+import com.oak404.redcast.data.ApiChangedException
+import com.oak404.redcast.data.SavedSearch
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material3.InputChip
@@ -176,16 +183,20 @@ fun HomeScreen(viewModel: MainViewModel, appLock: AppLock) {
                 SearchBuilder(viewModel, query) { query = "" }
                 return@Column
             }
+            ApiChangedBanner(viewModel)
+            val newClips by viewModel.newClips.collectAsStateWithLifecycle()
             PrimaryScrollableTabRow(selectedTabIndex = viewModel.tab.ordinal) {
                 HomeTab.entries.forEach { tab ->
+                    val fresh = if (tab == HomeTab.Searches) newClips.values.sumOf { it.count } else 0
                     Tab(
                         selected = tab == viewModel.tab,
                         onClick = { viewModel.tab = tab },
-                        text = { Text(tab.label, maxLines = 1) },
+                        text = { Text(if (fresh > 0) "${tab.label} · $fresh" else tab.label, maxLines = 1) },
                     )
                 }
             }
             when (viewModel.tab) {
+                HomeTab.Searches -> SavedSearches(viewModel)
                 HomeTab.Mix -> {
                     MixHeader(viewModel)
                     FeedGrid(viewModel, viewModel.mix)
@@ -431,6 +442,15 @@ fun ListingScreen(viewModel: MainViewModel, feed: Feed) {
                         }
                     }
                     if (search != null) {
+                        val savedSearches by viewModel.library.savedSearches.collectAsStateWithLifecycle()
+                        val saved = savedSearches.any { it.query == search }
+                        IconButton(onClick = { viewModel.toggleSaved(search) }) {
+                            Icon(
+                                if (saved) Icons.Default.Bookmark else Icons.Default.BookmarkBorder,
+                                contentDescription = if (saved) "Remove from Searches" else "Save to Searches",
+                                tint = if (saved) MaterialTheme.colorScheme.primary else LocalContentColor.current,
+                            )
+                        }
                         IconButton(onClick = { viewModel.editSearch(feed) }) {
                             Icon(Icons.Default.Edit, contentDescription = "Change this search")
                         }
@@ -538,7 +558,11 @@ fun FeedGrid(viewModel: MainViewModel, feed: Feed) {
     val error by feed.error.collectAsStateWithLifecycle()
     val exhausted by feed.exhausted.collectAsStateWithLifecycle()
     val settings by viewModel.library.settings.collectAsStateWithLifecycle()
+    val taste by viewModel.library.taste.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
+    // Muting or hiding something applies to listings already loaded too. Each clip keeps its
+    // place in the feed, which is what the player opens at.
+    val shown = remember(gifs, taste) { gifs.withIndex().filterNot { taste.hidesByRule(it.value) } }
     // Per feed: the state of a grid that has left composition keeps reporting its old size.
     // The feed holds the position instead, because these go whenever another screen opens.
     val grid = remember(feed) { LazyGridState(feed.scrollIndex, feed.scrollOffset) }
@@ -577,6 +601,9 @@ fun FeedGrid(viewModel: MainViewModel, feed: Feed) {
         gifs.isEmpty() && error is SignInRequiredException -> SignInPrompt()
         gifs.isEmpty() && error != null -> Message(error?.message ?: "Couldn't load this feed") {
             Button(onClick = { scope.launch { feed.loadMore() } }) { Text("Retry") }
+            if (error is ApiChangedException) {
+                TextButton(onClick = { viewModel.checkForUpdates(manual = true) }) { Text("Check for updates") }
+            }
         }
         gifs.isEmpty() && exhausted -> Message("Nothing here yet")
         gifs.isEmpty() -> Box(Modifier.fillMaxSize(), Alignment.Center) {
@@ -591,7 +618,7 @@ fun FeedGrid(viewModel: MainViewModel, feed: Feed) {
             verticalItemSpacing = 4.dp,
             modifier = Modifier.fillMaxSize(),
         ) {
-            staggeredItemsIndexed(gifs, key = { _, gif -> gif.id }) { index, gif ->
+            staggeredItemsIndexed(shown, key = { _, item -> item.value.id }) { _, (index, gif) ->
                 GifCard(gif, gif.aspectRatio) { viewModel.openGif(feed, index) }
             }
         }
@@ -603,7 +630,7 @@ fun FeedGrid(viewModel: MainViewModel, feed: Feed) {
             verticalArrangement = Arrangement.spacedBy(4.dp),
             modifier = Modifier.fillMaxSize(),
         ) {
-            itemsIndexed(gifs, key = { _, gif -> gif.id }) { index, gif ->
+            itemsIndexed(shown, key = { _, item -> item.value.id }) { _, (index, gif) ->
                 GifCard(gif, 9f / 16f) { viewModel.openGif(feed, index) }
             }
         }
@@ -666,6 +693,70 @@ private fun RecentSearches(viewModel: MainViewModel, onPick: (SearchQuery) -> Un
     }
     TextButton(onClick = viewModel.library::clearSearches) { Text("Clear recent searches") }
     HorizontalDivider()
+}
+
+/** Searches kept with the bookmark on their results, each with how many clips are new. */
+@Composable
+private fun SavedSearches(viewModel: MainViewModel) {
+    val saved by viewModel.library.savedSearches.collectAsStateWithLifecycle()
+    val newClips by viewModel.newClips.collectAsStateWithLifecycle()
+    LaunchedEffect(Unit) { viewModel.refreshNewClips() }
+    if (saved.isEmpty()) {
+        Message("Save a search with the bookmark on its results. New clips for it show up here.")
+        return
+    }
+    LazyColumn(Modifier.fillMaxSize()) {
+        items(saved, key = { it.query.toJson().toString() }) { search ->
+            SavedSearchRow(viewModel, search, newClips[search.query])
+            HorizontalDivider()
+        }
+    }
+}
+
+@Composable
+private fun SavedSearchRow(viewModel: MainViewModel, search: SavedSearch, fresh: com.oak404.redcast.data.NewClips?) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { viewModel.openSavedSearch(search, newestFirst = false) }
+            .padding(start = 16.dp, top = 4.dp, bottom = 4.dp),
+    ) {
+        Column(Modifier.weight(1f).padding(vertical = 8.dp)) {
+            Text(search.query.title, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Text(search.query.order.label, style = MaterialTheme.typography.bodySmall)
+        }
+        if (fresh != null) {
+            AssistChip(
+                onClick = { viewModel.openSavedSearch(search, newestFirst = true) },
+                label = { Text(fresh.label) },
+            )
+        }
+        IconButton(onClick = { viewModel.unsave(search.query) }) {
+            Icon(Icons.Default.Close, contentDescription = "Remove ${search.query.title} from Searches")
+        }
+    }
+}
+
+/** Says plainly when RedGIFs has changed something, instead of leaving feeds looking empty. */
+@Composable
+private fun ApiChangedBanner(viewModel: MainViewModel) {
+    val changed by viewModel.apiChanged.collectAsStateWithLifecycle()
+    val problem = changed ?: return
+    Surface(color = MaterialTheme.colorScheme.errorContainer, modifier = Modifier.fillMaxWidth()) {
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(start = 12.dp)) {
+            Icon(Icons.Default.Warning, contentDescription = null)
+            Text(
+                problem.message.orEmpty(),
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.weight(1f).padding(horizontal = 12.dp, vertical = 8.dp),
+            )
+            TextButton(onClick = { viewModel.checkForUpdates(manual = true) }) { Text("Update") }
+            IconButton(onClick = viewModel::dismissApiChanged) {
+                Icon(Icons.Default.Close, contentDescription = "Dismiss")
+            }
+        }
+    }
 }
 
 @Composable

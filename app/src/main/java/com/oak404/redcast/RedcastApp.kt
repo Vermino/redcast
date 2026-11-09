@@ -3,6 +3,7 @@ package com.oak404.redcast
 import android.app.Application
 import android.content.Context
 import androidx.annotation.OptIn
+import androidx.annotation.VisibleForTesting
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.database.StandaloneDatabaseProvider
 import androidx.media3.datasource.cache.CacheDataSource
@@ -28,7 +29,7 @@ class RedcastApp : Application() {
     /** Outlives the UI so a Cast queue keeps topping up while the app is in the background. */
     val scope = MainScope()
 
-    private val http by lazy { OkHttpClient() }
+    private val http by lazy { httpForTests ?: OkHttpClient() }
     val session by lazy { Session(this, http) }
     val api by lazy { RedgifsApi(session, http) }
     val library by lazy { Library(this) }
@@ -44,6 +45,9 @@ class RedcastApp : Application() {
             StandaloneDatabaseProvider(this),
         )
     }
+
+    @get:OptIn(UnstableApi::class)
+    val preloader by lazy { Preloader(videoCache, OkHttpDataSource.Factory(http)) }
 
     @OptIn(UnstableApi::class)
     fun createPlayer(): ExoPlayer {
@@ -68,5 +72,9 @@ class RedcastApp : Application() {
         private const val REBUFFER_MS = 2_000
 
         fun get(context: Context) = context.applicationContext as RedcastApp
+
+        /** Set by UI tests before the app first makes a request, to answer from fakes. */
+        @VisibleForTesting
+        var httpForTests: OkHttpClient? = null
     }
 }

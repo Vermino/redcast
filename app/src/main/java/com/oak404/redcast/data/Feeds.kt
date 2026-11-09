@@ -4,24 +4,19 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import java.io.IOException
+import java.util.concurrent.ConcurrentHashMap
 
 /** Builds the feed for a source, including the ones assembled on the phone. */
 class Feeds(private val api: RedgifsApi, private val library: Library) {
 
+    /** How many clips carry each tag, kept for the session; tag sizes barely move. */
+    private val tagSizes = ConcurrentHashMap<String, Long>()
+
     fun create(source: FeedSource): Feed = when (source) {
-        is FeedSource.Query -> {
-            val excluded = WordFilter(source.search.exclude)
-            Feed(source) { page ->
-                val found = visible(api.feed(source, page))
-                found.copy(
-                    gifs = found.gifs.filterNot(excluded::matches),
-                    relatedTags = found.relatedTags.filterNot(excluded::matches),
-                )
-            }
-        }
+        is FeedSource.Query -> Feed(source) { page -> searchPage(source.search, page) }
         is ApiFeed -> Feed(source) { page -> visible(api.feed(source, page)) }
         FeedSource.Mix -> Feed(source, ::loadMix)
-        is FeedSource.Similar -> Feed(source) { page -> visible(loadSimilar(source.gif, page)) }
+        is FeedSource.Similar -> Feed(source) { page -> visible(loadSimilar(source.gif, source.tags, page)) }
         is FeedSource.SavedList -> {
             val saved = library.lists.value[source.name].orEmpty()
             val discover = library.settings.value.listDiscovery && saved.isNotEmpty()
@@ -35,6 +30,59 @@ class Feeds(private val api: RedgifsApi, private val library: Library) {
         FeedSource.History -> Feed(source) { page ->
             if (page > 1) GifPage(emptyList(), 1) else visible(GifPage(library.history.value, 1))
         }
+    }
+
+    /** One page of [query], without hidden clips or the words it leaves out. */
+    private suspend fun searchPage(query: SearchQuery, page: Int, count: Int = RedgifsApi.PAGE_SIZE): GifPage {
+        val excluded = WordFilter(query.exclude)
+        val found = visible(api.feed(FeedSource.Query(query), page, count))
+        return found.copy(
+            gifs = found.gifs.filterNot(excluded::matches),
+            relatedTags = found.relatedTags.filterNot(excluded::matches),
+        )
+    }
+
+    /** Clips posted to [saved] since it was last opened, from its newest page. */
+    suspend fun newClips(saved: SavedSearch): NewClips {
+        val newest = searchPage(saved.query.copy(order = SearchOrder.Latest), 1, NEW_CHECK_SIZE)
+        val count = countNew(newest.gifs, saved.seenUpTo)
+        // A page that's new all the way down means there are more than it shows.
+        return NewClips(count, atLeast = count > 0 && count == newest.gifs.size && newest.pages > 1)
+    }
+
+    /**
+     * Up to three of [gif]'s least common tags that together still turn up plenty of clips,
+     * so "more like this" follows what's particular about it rather than what's everywhere.
+     */
+    suspend fun similarTags(gif: Gif): List<String> {
+        val taste = library.taste.value
+        val tags = gif.tags.filterNot { it in taste.hiddenTags || taste.mutes(it) }.take(MAX_TAGS_CONSIDERED)
+        if (tags.isEmpty()) return emptyList()
+        coroutineScope {
+            tags.filterNot(tagSizes::containsKey).map { tag ->
+                async {
+                    try {
+                        api.tagSize(tag)?.let { tagSizes[tag] = it }
+                    } catch (_: IOException) {
+                        // An unknown size just leaves the tag in its original place.
+                    }
+                }
+            }.awaitAll()
+        }
+        val ranked = distinctiveTags(tags, tagSizes, MIN_TAG_SIZE)
+        val tries = (minOf(SIMILAR_TAGS, ranked.size) downTo 2).map { ranked.take(it) }
+        val counts = coroutineScope {
+            tries.map { candidate ->
+                async {
+                    try {
+                        api.count(SearchQuery(tags = candidate))
+                    } catch (_: IOException) {
+                        0
+                    }
+                }
+            }.awaitAll()
+        }
+        return tries.zip(counts).firstOrNull { (_, found) -> found >= MIN_SIMILAR_RESULTS }?.first ?: ranked.take(1)
     }
 
     private fun visible(page: GifPage): GifPage {
@@ -82,10 +130,17 @@ class Feeds(private val api: RedgifsApi, private val library: Library) {
         return GifPage(MixRanker.rank(candidates, taste), Int.MAX_VALUE)
     }
 
-    private suspend fun loadSimilar(gif: Gif, page: Int): GifPage {
-        val tagged = FeedSource.Tag(gif.tags.take(SIMILAR_TAGS).joinToString(","))
-        val fromTags = api.feed(tagged, page)
-        val recommended = if (page == 1) api.recommended(gif.id) else emptyList()
+    private suspend fun loadSimilar(gif: Gif, tags: List<String>, page: Int): GifPage {
+        val fromTags = api.feed(FeedSource.Tag(tags.ifEmpty { gif.tags.take(1) }.joinToString(",")), page)
+        val recommended = if (page == 1) {
+            try {
+                api.recommended(gif.id)
+            } catch (_: IOException) {
+                emptyList()
+            }
+        } else {
+            emptyList()
+        }
         val merged = (recommended + fromTags.gifs).distinctBy { it.id }.filterNot { it.id == gif.id }
         return fromTags.copy(gifs = merged)
     }
@@ -94,8 +149,17 @@ class Feeds(private val api: RedgifsApi, private val library: Library) {
         const val MIX_TAGS = 5
         const val MIX_CREATORS = 4
         const val MIX_SOURCE_SIZE = 20
-        const val SIMILAR_TAGS = 2
+        const val SIMILAR_TAGS = 3
+        const val MAX_TAGS_CONSIDERED = 12
+        const val MIN_TAG_SIZE = 500L
+        const val MIN_SIMILAR_RESULTS = 60
+        const val NEW_CHECK_SIZE = 40
     }
+}
+
+/** New clips in a saved search; [atLeast] when there are more than were counted. */
+data class NewClips(val count: Int, val atLeast: Boolean = false) {
+    val label: String get() = "$count${if (atLeast) "+" else ""} new"
 }
 
 /**

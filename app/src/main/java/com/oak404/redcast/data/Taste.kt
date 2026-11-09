@@ -26,9 +26,27 @@ data class Taste(
 
     private val muted by lazy { WordFilter(mutedWords) }
 
-    fun hides(gif: Gif): Boolean =
-        gif.id in hiddenGifs || gif.userName in hiddenCreators || gif.tags.any { it in hiddenTags } ||
-            muted.matches(gif)
+    fun hides(gif: Gif): Boolean = gif.id in hiddenGifs || hidesByRule(gif)
+
+    /** Hidden by its creator, a tag or a muted word, rather than one clip at a time. */
+    fun hidesByRule(gif: Gif): Boolean =
+        gif.userName in hiddenCreators || gif.tags.any { it in hiddenTags } || muted.matches(gif)
+
+    /**
+     * This taste with an imported one folded in: everything hidden or muted in either stays so,
+     * and a score only comes from the import when there isn't one here already, so importing
+     * the same file twice changes nothing.
+     */
+    fun mergedWith(imported: Taste): Taste = copy(
+        tagScores = imported.tagScores + tagScores,
+        creatorScores = imported.creatorScores + creatorScores,
+        pinnedTags = (pinnedTags + imported.pinnedTags).distinct(),
+        hiddenGifs = hiddenGifs + imported.hiddenGifs,
+        hiddenCreators = hiddenCreators + imported.hiddenCreators,
+        hiddenTags = hiddenTags + imported.hiddenTags,
+        mutedWords = mutedWords + imported.mutedWords,
+        seen = (imported.seen + seen).distinct().takeLast(MAX_SEEN),
+    )
 
     fun mutes(tag: String): Boolean = muted.matches(tag)
 

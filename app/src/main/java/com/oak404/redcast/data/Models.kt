@@ -17,6 +17,8 @@ data class Gif(
     val likes: Long = 0,
     val promoted: Boolean = false,
     val description: String = "",
+    /** When it was posted, in Unix seconds; 0 when unknown. */
+    val created: Long = 0,
 ) {
     /** The API's own shape, so saved lists can be read back with [parseGif]. */
     fun toJson(): JSONObject = JSONObject()
@@ -30,6 +32,7 @@ data class Gif(
         .put("promoted", promoted)
         .put("tags", JSONArray(tags))
         .put("description", description)
+        .put("createDate", created)
         .put(
             "urls",
             JSONObject()
@@ -51,7 +54,8 @@ data class Profile(
     val gifCount: Long,
 )
 
-data class Suggestion(val text: String, val isTag: Boolean)
+/** [clips] is how many clips have the tag, when the site says. */
+data class Suggestion(val text: String, val isTag: Boolean, val clips: Long = 0)
 
 data class TrendingTag(val name: String, val count: Long)
 
@@ -113,8 +117,9 @@ sealed interface FeedSource {
         override val title = "My Mix"
     }
 
-    data class Similar(val gif: Gif) : FeedSource {
-        override val title = "More like this"
+    /** Clips like [gif]: the site's own picks, then clips with all of [tags]. */
+    data class Similar(val gif: Gif, val tags: List<String>) : FeedSource {
+        override val title = if (tags.isEmpty()) "More like this" else "Like this: ${tags.joinToString(" + ")}"
     }
 
     data class SavedList(val name: String) : FeedSource {
@@ -129,12 +134,20 @@ sealed interface FeedSource {
 /** Feeds that map directly to one API listing. */
 sealed interface ApiFeed : FeedSource
 
+/**
+ * Thrown when a reply no longer has the shape Redcast reads, which usually means RedGIFs changed
+ * its unofficial API. Feeds show it instead of looking empty.
+ */
+class ApiChangedException(what: String) :
+    java.io.IOException("Redcast can't read RedGIFs' $what any more. RedGIFs may have changed something; an update may fix it.")
+
 internal fun parseGifPage(json: JSONObject): GifPage {
-    val array = json.optJSONArray("gifs") ?: JSONArray()
-    val gifs = buildList {
-        for (i in 0 until array.length()) {
-            parseGif(array.getJSONObject(i))?.let(::add)
-        }
+    val array = json.optJSONArray("gifs") ?: throw ApiChangedException("clip listings")
+    val items = List(array.length()) { array.optJSONObject(it) }
+    val gifs = items.mapNotNull { it?.let(::parseGif) }
+    // Images, galleries and ads are skipped on purpose; a page where every clip fails to read is not.
+    if (gifs.isEmpty() && items.isNotEmpty() && items.none { it != null && isSkippedOnPurpose(it) }) {
+        throw ApiChangedException("clip listings")
     }
     val related = json.optJSONArray("tags")
     return GifPage(
@@ -144,10 +157,12 @@ internal fun parseGifPage(json: JSONObject): GifPage {
     )
 }
 
+private fun isSkippedOnPurpose(json: JSONObject) = json.optInt("type", 1) != 1 || !json.isNull("gallery")
+
 /** Returns null for anything that isn't a plain playable video: images, galleries and ads. */
 internal fun parseGif(json: JSONObject): Gif? {
-    if (json.optInt("type", 1) != 1) return null
-    if (!json.isNull("gallery")) return null
+    if (isSkippedOnPurpose(json)) return null
+    if (json.optString("id").isEmpty()) return null
 
     val urls = json.optJSONObject("urls") ?: return null
     val hd = urls.optString("hd").ifEmpty { urls.optString("sd") }
@@ -169,6 +184,7 @@ internal fun parseGif(json: JSONObject): Gif? {
         likes = json.optLong("likes"),
         promoted = json.optBoolean("promoted", false),
         description = if (json.isNull("description")) "" else json.optString("description"),
+        created = json.optLong("createDate"),
     )
 }
 

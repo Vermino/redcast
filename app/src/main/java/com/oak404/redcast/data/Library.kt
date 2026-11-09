@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.IOException
 
 /** The phone's own record of taste and saved lists. Nothing here leaves the device. */
 class Library(context: Context) {
@@ -39,6 +40,11 @@ class Library(context: Context) {
 
     private val _searches = MutableStateFlow(readStrings(KEY_SEARCHES))
     val searches: StateFlow<List<String>> = _searches.asStateFlow()
+
+    private val _savedSearches = MutableStateFlow(readSavedSearches())
+
+    /** Searches kept on the Searches tab, newest saved first. */
+    val savedSearches: StateFlow<List<SavedSearch>> = _savedSearches.asStateFlow()
 
     var ageConfirmed: Boolean
         get() = prefs.getBoolean(KEY_AGE, false)
@@ -78,13 +84,59 @@ class Library(context: Context) {
 
     fun clearSearches() = saveSearches(emptyList())
 
+    /** Keeps [query] on the Searches tab; clips posted before [nowSec] don't count as new. */
+    fun saveSearch(query: SearchQuery, nowSec: Long) {
+        if (_savedSearches.value.none { it.query == query }) {
+            saveSavedSearches(listOf(SavedSearch(query, nowSec)) + _savedSearches.value)
+        }
+    }
+
+    fun unsaveSearch(query: SearchQuery) = saveSavedSearches(_savedSearches.value.filterNot { it.query == query })
+
+    /** Opening a saved search catches it up, so only clips posted after now count as new. */
+    fun markSearchSeen(query: SearchQuery, nowSec: Long) {
+        if (_savedSearches.value.none { it.query == query }) return
+        saveSavedSearches(_savedSearches.value.map { if (it.query == query) it.copy(seenUpTo = nowSec) else it })
+    }
+
+    private fun saveSavedSearches(searches: List<SavedSearch>) {
+        _savedSearches.value = searches
+        persist(KEY_SAVED_SEARCHES) { savedSearchesJson(_savedSearches.value).toString() }
+    }
+
     /** Everything kept here. Sign-in tokens live in a separate store and are never included. */
     fun exportJson(): JSONObject = JSONObject()
+        .put("app", EXPORT_APP)
         .put("settings", _settings.value.toJson())
         .put("taste", _taste.value.toJson())
         .put("lists", listsJson(_lists.value))
         .put("history", gifsJson(_history.value))
         .put("searches", JSONArray(_searches.value))
+        .put("savedSearches", savedSearchesJson(_savedSearches.value))
+
+    /**
+     * Folds an [exportJson] file into what's here. Lists, history, searches and taste are merged,
+     * so nothing on this phone is lost; settings are taken from the file.
+     */
+    fun importJson(json: JSONObject): ImportResult {
+        if (EXPORT_KEYS.none(json::has)) throw IOException("That file isn't a Redcast export")
+        val imported = readExport(json)
+
+        imported.settings?.let { settings -> updateSettings { settings } }
+        imported.taste?.let { taste -> updateTaste { it.mergedWith(taste) } }
+        saveLists(mergeLists(_lists.value, imported.lists))
+        saveHistory(mergeRecent(_history.value, imported.history, MAX_HISTORY) { it.id })
+        saveSearches(mergeRecent(_searches.value, imported.searches, MAX_SEARCHES) { it })
+        saveSavedSearches(mergeRecent(_savedSearches.value, imported.savedSearches, Int.MAX_VALUE) { it.query })
+
+        return ImportResult(
+            lists = imported.lists.size,
+            clips = imported.lists.values.sumOf { it.size },
+            history = imported.history.size,
+            savedSearches = imported.savedSearches.size,
+            mutedWords = imported.taste?.mutedWords?.size ?: 0,
+        )
+    }
 
     private fun saveHistory(gifs: List<Gif>) {
         _history.value = gifs
@@ -128,6 +180,15 @@ class Library(context: Context) {
 
     private fun gifsJson(gifs: List<Gif>) = JSONArray().also { array -> gifs.forEach { array.put(it.toJson()) } }
 
+    private fun savedSearchesJson(searches: List<SavedSearch>) =
+        JSONArray().also { array -> searches.forEach { array.put(it.toJson()) } }
+
+    private fun readSavedSearches(): List<SavedSearch> {
+        val array = prefs.getString(KEY_SAVED_SEARCHES, null)
+            ?.let { runCatching { JSONArray(it) }.getOrNull() } ?: return emptyList()
+        return List(array.length()) { array.optJSONObject(it) }.mapNotNull { it?.let(SavedSearch::fromJson) }
+    }
+
     private fun readSettings(): Settings =
         prefs.getString(KEY_SETTINGS, null)?.let { runCatching { settingsFrom(JSONObject(it)) }.getOrNull() } ?: Settings()
 
@@ -160,6 +221,9 @@ class Library(context: Context) {
         const val KEY_SETTINGS = "settings"
         const val KEY_HISTORY = "history"
         const val KEY_SEARCHES = "searches"
+        const val KEY_SAVED_SEARCHES = "saved_searches"
+        const val EXPORT_APP = "redcast"
+        val EXPORT_KEYS = listOf("settings", "taste", "lists", "history", "searches", "savedSearches")
         const val KEY_AGE = "age_confirmed"
         const val KEY_SWIPE_HINT = "swipe_hint_seen"
         const val KEY_UPDATE_CHECK = "update_check_ms"
@@ -169,6 +233,65 @@ class Library(context: Context) {
         const val WRITE_DELAY_MS = 400L
     }
 }
+
+/** What an import brought in, for telling the person. */
+data class ImportResult(
+    val lists: Int,
+    val clips: Int,
+    val history: Int,
+    val savedSearches: Int,
+    val mutedWords: Int,
+) {
+    val summary: String
+        get() = buildList {
+            if (lists > 0) add("${plural(lists, "list")} (${plural(clips, "clip")})")
+            if (savedSearches > 0) add(plural(savedSearches, "saved search", "saved searches"))
+            if (history > 0) add("${plural(history, "clip")} of history")
+            if (mutedWords > 0) add(plural(mutedWords, "muted word"))
+        }.let { if (it.isEmpty()) "Imported settings and taste" else "Imported " + it.joinToString(", ") }
+
+    private fun plural(n: Int, one: String, many: String = one + "s") = "$n ${if (n == 1) one else many}"
+}
+
+/** An export file read back. Anything missing or unreadable is left out. */
+internal class Export(
+    val settings: Settings?,
+    val taste: Taste?,
+    val lists: Map<String, List<Gif>>,
+    val history: List<Gif>,
+    val searches: List<String>,
+    val savedSearches: List<SavedSearch>,
+)
+
+internal fun readExport(json: JSONObject): Export {
+    fun gifs(array: JSONArray?): List<Gif> =
+        if (array == null) emptyList() else List(array.length()) { array.optJSONObject(it) }.mapNotNull { it?.let(::parseGif) }
+    fun strings(array: JSONArray?): List<String> =
+        if (array == null) emptyList() else List(array.length()) { array.optString(it) }.filter { it.isNotEmpty() }
+    val lists = json.optJSONObject("lists")
+    val saved = json.optJSONArray("savedSearches")
+    return Export(
+        settings = json.optJSONObject("settings")?.let { runCatching { settingsFrom(it) }.getOrNull() },
+        taste = json.optJSONObject("taste")?.let { runCatching { tasteFrom(it) }.getOrNull() },
+        lists = lists?.keys()?.asSequence()?.associateWith { gifs(lists.optJSONArray(it)) }.orEmpty(),
+        history = gifs(json.optJSONArray("history")),
+        searches = strings(json.optJSONArray("searches")),
+        savedSearches = if (saved == null) emptyList() else
+            List(saved.length()) { saved.optJSONObject(it) }.mapNotNull { it?.let(SavedSearch::fromJson) },
+    )
+}
+
+/** Each list keeps its own clips in order, with the imported ones it lacked added after them. */
+internal fun mergeLists(local: Map<String, List<Gif>>, imported: Map<String, List<Gif>>): Map<String, List<Gif>> =
+    (local.keys + imported.keys).associateWith { name ->
+        val mine = local[name].orEmpty()
+        val ids = mine.mapTo(HashSet()) { it.id }
+        mine + imported[name].orEmpty().filter { ids.add(it.id) }
+    }
+
+/** What's here first, then imported items not already present, up to [limit]. */
+internal fun <T, K> mergeRecent(local: List<T>, imported: List<T>, limit: Int, key: (T) -> K): List<T> =
+    (local + imported).distinctBy(key).take(limit)
 
 internal fun Taste.toJson(): JSONObject = JSONObject()
     .put("tags", JSONObject(tagScores))

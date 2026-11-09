@@ -5,6 +5,8 @@ import androidx.annotation.OptIn
 import androidx.compose.animation.core.Animatable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.ui.platform.testTag
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -103,8 +105,13 @@ import com.oak404.redcast.R
 import com.oak404.redcast.RedcastApp
 import com.oak404.redcast.data.Feed
 import com.oak404.redcast.data.Gif
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import coil.imageLoader
+import coil.request.ImageRequest
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.abs
 
 @Composable
@@ -140,11 +147,14 @@ fun PlayerScreen(viewModel: MainViewModel, feed: Feed, startIndex: Int) {
     val targets = remember(lists.keys, screen) { sortTargets(lists.keys.toList(), screen.width, screen.height) }
     // A swipe already said how this clip went, so leaving it early isn't also a skip.
     val judged = remember { HashSet<String>() }
+    var lastSettled by remember { mutableIntStateOf(startIndex) }
+    var tagsFor by remember { mutableStateOf<Gif?>(null) }
 
     val casting = deviceName != null
     val autoscroll = viewModel.autoscroll
 
     DisposableEffect(player) {
+        var failuresInARow = 0
         val listener = object : Player.Listener {
             override fun onPositionDiscontinuity(
                 oldPosition: Player.PositionInfo,
@@ -163,15 +173,22 @@ fun PlayerScreen(viewModel: MainViewModel, feed: Feed, startIndex: Int) {
             }
 
             override fun onPlayerError(error: PlaybackException) {
-                // One dead clip shouldn't end the run.
+                // One dead clip shouldn't end the run, but a run of them (offline, say) shouldn't
+                // spin through the whole playlist or retry forever either.
+                if (++failuresInARow > MAX_FAILURES_IN_A_ROW) return
                 if (player.hasNextMediaItem()) player.seekToNextMediaItem()
                 player.prepare()
+            }
+
+            override fun onRenderedFirstFrame() {
+                failuresInARow = 0
             }
         }
         player.addListener(listener)
         onDispose {
             player.removeListener(listener)
             player.release()
+            viewModel.stopPreloading()
             viewModel.onPlayerClosed()
         }
     }
@@ -194,6 +211,17 @@ fun PlayerScreen(viewModel: MainViewModel, feed: Feed, startIndex: Int) {
     LaunchedEffect(pager.settledPage, gifs.isEmpty()) {
         val page = pager.settledPage
         if (gifs.isEmpty()) return@LaunchedEffect
+        // A clip muted or hidden since this feed loaded is stepped over, in the direction of travel.
+        val forward = page >= lastSettled
+        lastSettled = page
+        if (!casting && viewModel.library.taste.value.hidesByRule(gifs[page])) {
+            val next = if (forward) page + 1 else page - 1
+            if (next in gifs.indices) {
+                pager.animateScrollToPage(next)
+                return@LaunchedEffect
+            }
+            if (forward) feed.loadMore()
+        }
         viewModel.onPlayerPosition(feed, page)
         viewModel.onClipSeen(gifs[page])
         val playing = player.currentMediaItemIndex
@@ -209,6 +237,18 @@ fun PlayerScreen(viewModel: MainViewModel, feed: Feed, startIndex: Int) {
         firstSettle = false
         if (userMoved && casting && nowPlaying != null && nowPlaying?.gifId != gifs[page].id) {
             cast.jumpTo(feed, page)
+        }
+    }
+
+    // Once this clip is playing, fetch the next few so swiping to them doesn't wait on the network.
+    LaunchedEffect(pager.settledPage, gifs.size, casting) {
+        if (casting || gifs.isEmpty()) return@LaunchedEffect
+        withTimeoutOrNull(PRELOAD_WAIT_MS) {
+            while (player.playbackState != Player.STATE_READY) delay(PRELOAD_POLL_MS)
+        }
+        viewModel.preloadAfter(gifs, pager.settledPage)
+        gifs.drop(pager.settledPage + 1).take(PRELOAD_POSTERS).forEach { gif ->
+            context.imageLoader.enqueue(ImageRequest.Builder(context).data(gif.posterUrl).build())
         }
     }
 
@@ -315,6 +355,9 @@ fun PlayerScreen(viewModel: MainViewModel, feed: Feed, startIndex: Int) {
                 )
                 CastButton(viewModel, onDark = true)
             }
+            if (viewModel.findingSimilar) {
+                LinearProgressIndicator(Modifier.fillMaxWidth().testTag("finding-similar"))
+            }
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 if (keptFlash > 0) {
                     var visible by remember { mutableStateOf(false) }
@@ -384,12 +427,18 @@ fun PlayerScreen(viewModel: MainViewModel, feed: Feed, startIndex: Int) {
                         if (autoscroll) "Autoscroll on, tap to loop this video" else "Looping, tap for autoscroll",
                     ) { viewModel.autoscroll = !autoscroll }
                     if (current != null) {
-                        ClipMenu(viewModel, current, goToNext, onSave = { savingGif = current })
+                        ClipMenu(
+                            viewModel,
+                            current,
+                            goToNext,
+                            onSave = { savingGif = current },
+                            onTags = { tagsFor = current },
+                        )
                     }
                 }
             }
             if (current != null) {
-                ClipDetails(viewModel, current)
+                ClipDetails(viewModel, current, goToNext)
             }
             if (!casting) PlaybackProgress(player)
         }
@@ -401,6 +450,10 @@ fun PlayerScreen(viewModel: MainViewModel, feed: Feed, startIndex: Int) {
 
     savingGif?.let { gif ->
         SaveDialog(viewModel, gif, onDismiss = { savingGif = null })
+    }
+
+    tagsFor?.let { gif ->
+        TagsDialog(viewModel, gif, goToNext, onDismiss = { tagsFor = null })
     }
 }
 
@@ -453,9 +506,9 @@ private fun SortOverlay(gif: Gif, targets: List<SortTarget>, finger: Offset, rea
     }
 }
 
-/** Creator button and tags, both of which open their own pages. */
+/** Creator button and tags, both of which open their own pages. Holding a tag offers more. */
 @Composable
-private fun ClipDetails(viewModel: MainViewModel, gif: Gif) {
+private fun ClipDetails(viewModel: MainViewModel, gif: Gif, goToNext: () -> Unit) {
     Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
         Row(
             Modifier
@@ -482,22 +535,95 @@ private fun ClipDetails(viewModel: MainViewModel, gif: Gif) {
         Spacer(Modifier.height(6.dp))
         LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             items(gif.tags, key = { it }) { tag ->
-                Text(
-                    tag,
-                    color = Color.White,
-                    style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier
-                        .background(Color(0x66000000), RoundedCornerShape(12.dp))
-                        .clickable { viewModel.openTag(tag) }
-                        .padding(horizontal = 8.dp, vertical = 4.dp),
-                )
+                TagChip(viewModel, gif, tag, goToNext)
             }
         }
     }
 }
 
 @Composable
-private fun ClipMenu(viewModel: MainViewModel, gif: Gif, goToNext: () -> Unit, onSave: () -> Unit) {
+private fun TagChip(viewModel: MainViewModel, gif: Gif, tag: String, goToNext: () -> Unit) {
+    val taste by viewModel.library.taste.collectAsStateWithLifecycle()
+    var open by remember { mutableStateOf(false) }
+    Box {
+        Text(
+            tag,
+            color = Color.White,
+            style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier
+                .background(Color(0x66000000), RoundedCornerShape(12.dp))
+                .combinedClickable(
+                    onClickLabel = "Open $tag",
+                    onLongClickLabel = "More for $tag",
+                    onLongClick = { open = true },
+                    onClick = { viewModel.openTag(tag) },
+                )
+                .padding(horizontal = 8.dp, vertical = 4.dp),
+        )
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            DropdownMenuItem(text = { Text("Open $tag") }, onClick = {
+                open = false
+                viewModel.openTag(tag)
+            })
+            val pinned = tag in taste.pinnedTags
+            DropdownMenuItem(text = { Text(if (pinned) "Unpin from My Mix" else "Pin to My Mix") }, onClick = {
+                open = false
+                viewModel.togglePinned(tag)
+            })
+            HorizontalDivider()
+            DropdownMenuItem(text = { Text("Mute “${tag.lowercase()}” everywhere") }, onClick = {
+                open = false
+                viewModel.muteTag(tag)
+                goToNext()
+            })
+            DropdownMenuItem(text = { Text("Hide the $tag tag") }, onClick = {
+                open = false
+                viewModel.hideTag(tag)
+                goToNext()
+            })
+        }
+    }
+}
+
+/** Every tag on a clip, each with a way to mute or hide it. */
+@Composable
+private fun TagsDialog(viewModel: MainViewModel, gif: Gif, goToNext: () -> Unit, onDismiss: () -> Unit) {
+    val act: (() -> Unit) -> Unit = { action ->
+        action()
+        onDismiss()
+        goToNext()
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Mute or hide a tag") },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                Text(
+                    "Muting a word hides any clip with it in a tag or description. Hiding a tag hides clips with that exact tag.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Spacer(Modifier.height(8.dp))
+                gif.tags.forEach { tag ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(tag, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        TextButton(onClick = { act { viewModel.muteTag(tag) } }) { Text("Mute") }
+                        TextButton(onClick = { act { viewModel.hideTag(tag) } }) { Text("Hide") }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } },
+    )
+}
+
+@Composable
+private fun ClipMenu(
+    viewModel: MainViewModel,
+    gif: Gif,
+    goToNext: () -> Unit,
+    onSave: () -> Unit,
+    onTags: () -> Unit,
+) {
     var open by remember { mutableStateOf(false) }
     Box {
         OverlayButton(Icons.Default.MoreVert, "More options") { open = true }
@@ -522,6 +648,7 @@ private fun ClipMenu(viewModel: MainViewModel, gif: Gif, goToNext: () -> Unit, o
                 viewModel.hideCreator(gif.userName)
                 goToNext()
             }()
+            if (gif.tags.isNotEmpty()) item("Mute or hide a tag") { onTags() }()
             HorizontalDivider()
             SLEEP_MINUTES.forEach { minutes ->
                 item("Sleep in $minutes minutes") { viewModel.setSleepTimer(minutes) }()
@@ -753,3 +880,7 @@ private val SORT_REACH = 56.dp
 private const val PROGRESS_TICK_MS = 200L
 private const val SKIP_THRESHOLD_MS = 3_000L
 private val SLEEP_MINUTES = listOf(15, 30, 60)
+private const val MAX_FAILURES_IN_A_ROW = 5
+private const val PRELOAD_WAIT_MS = 4_000L
+private const val PRELOAD_POLL_MS = 200L
+private const val PRELOAD_POSTERS = 3
