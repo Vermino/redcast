@@ -115,18 +115,18 @@ class Feeds(private val api: RedgifsApi, private val library: Library) {
             taste.topCreators(MIX_CREATORS).map { FeedSource.CreatorGifs(it) }
         if (sources.isEmpty()) return GifPage(emptyList(), 0)
 
-        val candidates = coroutineScope {
+        val results = coroutineScope {
             sources.map { source ->
                 async {
-                    try {
-                        api.feed(source, page, MIX_SOURCE_SIZE).gifs
-                    } catch (_: IOException) {
-                        // One dead creator or tag shouldn't sink the whole page.
-                        emptyList()
-                    }
+                    // One dead creator or tag shouldn't sink the whole page.
+                    runCatchingIo { api.feed(source, page, MIX_SOURCE_SIZE).gifs }
                 }
-            }.awaitAll().flatten()
+            }.awaitAll()
         }
+        // All of them failing is the network or a rate limit, not the end of the mix: say so,
+        // or five empty pages in a row would end the feed for good.
+        if (results.all { it.isFailure }) throw results.first().exceptionOrNull() as IOException
+        val candidates = results.flatMap { it.getOrDefault(emptyList()) }
         return GifPage(MixRanker.rank(candidates, taste), Int.MAX_VALUE)
     }
 
@@ -155,6 +155,13 @@ class Feeds(private val api: RedgifsApi, private val library: Library) {
         const val MIN_SIMILAR_RESULTS = 60
         const val NEW_CHECK_SIZE = 40
     }
+}
+
+/** [block]'s result, or the [IOException] it threw; anything else (cancellation too) still throws. */
+private inline fun <T> runCatchingIo(block: () -> T): Result<T> = try {
+    Result.success(block())
+} catch (e: IOException) {
+    Result.failure(e)
 }
 
 /** New clips in a saved search; [atLeast] when there are more than were counted. */

@@ -48,7 +48,20 @@ class UpdatesTest {
     }
 
     @Test
+    fun aReplyThatIsntAReleaseIsAnErrorNotACrash(): Unit = runBlocking {
+        // What a captive portal sends back: 200, and a page of its own.
+        server.enqueue(MockResponse().setBody("<html>Sign in to the Wi-Fi</html>"))
+        server.start()
+        try {
+            Updates(OkHttpClient(), server.url("/latest").toString()).latest()
+            fail("expected an IOException")
+        } catch (_: IOException) {
+        }
+    }
+
+    @Test
     fun ignoresDraftsPrereleasesAndReleasesWithoutAnApk() {
+
         assertNull(parseRelease(releaseJson().put("draft", true)))
         assertNull(parseRelease(releaseJson().put("prerelease", true)))
         assertNull(parseRelease(releaseJson("v1.3", "notes.txt")))

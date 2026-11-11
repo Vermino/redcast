@@ -148,6 +148,7 @@ fun PlayerScreen(viewModel: MainViewModel, feed: Feed, startIndex: Int) {
 
     DisposableEffect(player) {
         var failuresInARow = 0
+        var lastFinishedId: String? = null
         val listener = object : Player.Listener {
             override fun onPositionDiscontinuity(
                 oldPosition: Player.PositionInfo,
@@ -155,7 +156,10 @@ fun PlayerScreen(viewModel: MainViewModel, feed: Feed, startIndex: Int) {
                 reason: Int,
             ) {
                 if (reason == Player.DISCONTINUITY_REASON_AUTO_TRANSITION) {
-                    currentGifs.getOrNull(oldPosition.mediaItemIndex)?.let(viewModel::onClipFinished)
+                    // A looping clip ends over and over: watching it through counts once.
+                    val finished = currentGifs.getOrNull(oldPosition.mediaItemIndex) ?: return
+                    if (finished.id != lastFinishedId) viewModel.onClipFinished(finished)
+                    lastFinishedId = finished.id
                 }
             }
 
@@ -169,7 +173,12 @@ fun PlayerScreen(viewModel: MainViewModel, feed: Feed, startIndex: Int) {
                 // One dead clip shouldn't end the run, but a run of them (offline, say) shouldn't
                 // spin through the whole playlist or retry forever either.
                 if (++failuresInARow > MAX_FAILURES_IN_A_ROW) return
-                if (player.hasNextMediaItem()) player.seekToNextMediaItem()
+                if (player.hasNextMediaItem()) {
+                    player.seekToNextMediaItem()
+                    // A seek, so the pager isn't told as it is for a clip that ends: bring it along,
+                    // or the screen keeps showing the dead clip's poster over the next one's sound.
+                    scope.launch { pager.animateScrollToPage(player.currentMediaItemIndex) }
+                }
                 player.prepare()
             }
 

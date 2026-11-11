@@ -596,6 +596,15 @@ fun FeedGrid(viewModel: MainViewModel, feed: Feed) {
             (last ?: 0) >= total - LOAD_AHEAD
         }.collect { nearEnd -> if (nearEnd) feed.loadMore() }
     }
+    // With clips already showing there's no room for the full-screen error, so a next page
+    // that fails says so in passing; scrolling to the end again retries it.
+    LaunchedEffect(error) {
+        val failed = error
+        if (failed != null && failed !is SignInRequiredException && feed.items.value.isNotEmpty()) {
+            viewModel.onLoadMoreFailed(failed)
+        }
+    }
+
 
     when {
         gifs.isEmpty() && error is SignInRequiredException -> SignInPrompt()
@@ -609,7 +618,8 @@ fun FeedGrid(viewModel: MainViewModel, feed: Feed) {
         gifs.isEmpty() -> Box(Modifier.fillMaxSize(), Alignment.Center) {
             if (loading) CircularProgressIndicator()
         }
-        layout == FeedLayout.List -> InlineList(viewModel, feed, gifs, list)
+        layout == FeedLayout.List -> InlineList(viewModel, feed, shown, list)
+
         layout == FeedLayout.Staggered -> LazyVerticalStaggeredGrid(
             columns = StaggeredGridCells.Fixed(settings.columns),
             state = staggered,

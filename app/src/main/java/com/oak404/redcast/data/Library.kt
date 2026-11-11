@@ -25,6 +25,7 @@ class Library(context: Context) {
     @OptIn(ExperimentalCoroutinesApi::class)
     private val writer = CoroutineScope(SupervisorJob() + Dispatchers.IO.limitedParallelism(1))
     private val pendingWrites = HashMap<String, Job>()
+    private val pendingValues = HashMap<String, () -> String>()
 
     private val _taste = MutableStateFlow(readTaste())
     val taste: StateFlow<Taste> = _taste.asStateFlow()
@@ -167,11 +168,29 @@ class Library(context: Context) {
     private fun persist(key: String, value: () -> String) {
         synchronized(pendingWrites) {
             pendingWrites[key]?.cancel()
+            pendingValues[key] = value
             pendingWrites[key] = writer.launch {
                 delay(WRITE_DELAY_MS)
-                prefs.edit().putString(key, value()).apply()
+                val latest = synchronized(pendingWrites) { pendingValues.remove(key) } ?: return@launch
+                prefs.edit().putString(key, latest()).apply()
             }
         }
+    }
+
+    /**
+     * Writes anything still waiting, now. Called as the app leaves the screen, since Android may
+     * end the process any time after that and the wait before a save would lose the last change.
+     */
+    fun flush() {
+        val waiting = synchronized(pendingWrites) {
+            pendingWrites.values.forEach { it.cancel() }
+            pendingWrites.clear()
+            pendingValues.toMap().also { pendingValues.clear() }
+        }
+        if (waiting.isEmpty()) return
+        val edit = prefs.edit()
+        waiting.forEach { (key, value) -> edit.putString(key, value()) }
+        edit.apply()
     }
 
     private fun listsJson(lists: Map<String, List<Gif>>) = JSONObject().also { json ->
@@ -194,12 +213,17 @@ class Library(context: Context) {
 
     private fun readGifs(key: String): List<Gif> {
         val array = prefs.getString(key, null)?.let { runCatching { JSONArray(it) }.getOrNull() } ?: return emptyList()
-        return List(array.length()) { array.getJSONObject(it) }.mapNotNull(::parseGif)
+        return gifsIn(array)
     }
+
+    /** The clips in [array] that can still be read: one bad entry doesn't cost the rest. */
+    private fun gifsIn(array: JSONArray): List<Gif> =
+        List(array.length()) { array.optJSONObject(it) }
+            .mapNotNull { json -> json?.let { runCatching { parseGif(it) }.getOrNull() } }
 
     private fun readStrings(key: String): List<String> {
         val array = prefs.getString(key, null)?.let { runCatching { JSONArray(it) }.getOrNull() } ?: return emptyList()
-        return List(array.length()) { array.getString(it) }
+        return List(array.length()) { array.optString(it) }.filter { it.isNotEmpty() }
     }
 
     private fun readTaste(): Taste =
@@ -208,10 +232,7 @@ class Library(context: Context) {
     private fun readLists(): Map<String, List<Gif>> {
         val json = prefs.getString(KEY_LISTS, null)
             ?.let { runCatching { JSONObject(it) }.getOrNull() } ?: return emptyMap()
-        return json.keys().asSequence().associateWith { name ->
-            val array = json.getJSONArray(name)
-            List(array.length()) { array.getJSONObject(it) }.mapNotNull(::parseGif)
-        }
+        return json.keys().asSequence().associateWith { name -> json.optJSONArray(name)?.let(::gifsIn).orEmpty() }
     }
 
     private companion object {
@@ -316,10 +337,10 @@ internal fun tasteFrom(json: JSONObject) = Taste(
 
 private fun JSONObject.scores(key: String): Map<String, Double> {
     val scores = optJSONObject(key) ?: return emptyMap()
-    return scores.keys().asSequence().associateWith { scores.getDouble(it) }
+    return scores.keys().asSequence().associateWith { scores.optDouble(it, 0.0) }.filterValues { !it.isNaN() }
 }
 
 private fun JSONObject.strings(key: String): List<String> {
     val array = optJSONArray(key) ?: return emptyList()
-    return List(array.length()) { array.getString(it) }
+    return List(array.length()) { array.optString(it) }.filter { it.isNotEmpty() }
 }

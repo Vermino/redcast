@@ -11,7 +11,10 @@ import java.net.ServerSocket
 import java.net.Socket
 import java.security.SecureRandom
 import java.util.concurrent.ExecutorService
-import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.SynchronousQueue
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 
 /**
  * Serves clips to the Cast receiver from this phone over the local network.
@@ -37,7 +40,9 @@ class CastRelay(
     fun start(address: InetAddress) {
         if (server != null) return
         val socket = ServerSocket(0, BACKLOG, address)
-        val pool = Executors.newCachedThreadPool()
+        // A receiver holds a few connections at once; the cap keeps anything else on the network
+        // from tying up threads without end. One more thread accepts.
+        val pool = ThreadPoolExecutor(1, MAX_CONNECTIONS + 1, 30L, TimeUnit.SECONDS, SynchronousQueue())
         server = socket
         workers = pool
         baseUrl = "http://${address.hostAddress}:${socket.localPort}/$token"
@@ -48,7 +53,11 @@ class CastRelay(
                 } catch (_: IOException) {
                     break
                 }
-                pool.execute { serve(client) }
+                try {
+                    pool.execute { serve(client) }
+                } catch (_: RejectedExecutionException) {
+                    runCatching { client.close() }
+                }
             }
         }
     }
@@ -80,6 +89,8 @@ class CastRelay(
             }
         } catch (_: IOException) {
             // The receiver drops connections as it seeks and moves between clips.
+        } catch (_: IllegalArgumentException) {
+            // A header OkHttp won't send on (odd characters in Range): drop the request, not the app.
         }
     }
 
@@ -154,6 +165,7 @@ class CastRelay(
     private companion object {
         const val MEDIA_BASE = "https://media.redgifs.com"
         const val BACKLOG = 16
+        const val MAX_CONNECTIONS = 16
         const val READ_TIMEOUT_MS = 30_000
         const val MAX_HEADER_LINES = 64
         const val MAX_LINE_LENGTH = 8192

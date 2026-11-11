@@ -4,6 +4,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import org.json.JSONException
 import org.json.JSONObject
 import java.io.File
 import java.io.IOException
@@ -26,7 +27,12 @@ class Updates(private val http: OkHttpClient, private val latestUrl: String = LA
         http.newCall(request).execute().use { response ->
             if (response.code == 404) return@withContext null
             if (!response.isSuccessful) throw IOException("Couldn't check for updates (${response.code})")
-            parseRelease(JSONObject(response.body?.string().orEmpty()))
+            // A captive portal or proxy answers 200 with a page of its own.
+            try {
+                parseRelease(JSONObject(response.body?.string().orEmpty()))
+            } catch (e: JSONException) {
+                throw IOException("Couldn't read the update reply", e)
+            }
         }
     }
 
@@ -73,7 +79,7 @@ internal fun parseRelease(json: JSONObject): Release? {
     if (json.optBoolean("draft") || json.optBoolean("prerelease")) return null
     val version = json.optString("tag_name").removePrefix("v").ifEmpty { return null }
     val assets = json.optJSONArray("assets") ?: return null
-    val apk = (0 until assets.length()).map { assets.getJSONObject(it) }
+    val apk = (0 until assets.length()).mapNotNull { assets.optJSONObject(it) }
         .firstOrNull { it.optString("name").endsWith(".apk") } ?: return null
     val url = apk.optString("browser_download_url").ifEmpty { return null }
     return Release(version, json.optString("body").trim(), url, apk.optLong("size"))

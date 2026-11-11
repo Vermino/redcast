@@ -1,6 +1,7 @@
 package com.oak404.redcast.ui
 
 import android.content.Context
+import android.os.SystemClock
 import android.view.WindowManager
 import androidx.appcompat.app.AppCompatActivity
 import androidx.biometric.BiometricManager
@@ -44,11 +45,11 @@ class AppLock(private val activity: AppCompatActivity) {
     }
 
     fun onLeftApp() {
-        leftAtMs = System.currentTimeMillis()
+        leftAtMs = SystemClock.elapsedRealtime()
     }
 
     fun onReturned() {
-        if (enabled && System.currentTimeMillis() - leftAtMs > GRACE_MS) locked = true
+        if (enabled && SystemClock.elapsedRealtime() - leftAtMs > GRACE_MS) locked = true
         if (locked) prompt()
     }
 

@@ -98,7 +98,10 @@ class MainActivity : AppCompatActivity() {
 
     override fun onStop() {
         appLock.onLeftApp()
+        // Android may end the process any time from here, so nothing should still be waiting to save.
+        viewModel.library.flush()
         super.onStop()
+
     }
 }
 

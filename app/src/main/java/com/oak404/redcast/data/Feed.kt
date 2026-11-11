@@ -3,6 +3,7 @@ package com.oak404.redcast.data
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import org.json.JSONException
@@ -63,11 +64,11 @@ class Feed(val source: FeedSource, private val loader: suspend (Int) -> GifPage)
 
     /** Puts [gif] first, for a change made in the app that the listing would only show after a reload. */
     fun prepend(gif: Gif) {
-        if (_items.value.none { it.id == gif.id }) _items.value = listOf(gif) + _items.value
+        _items.update { items -> if (items.none { it.id == gif.id }) listOf(gif) + items else items }
     }
 
     fun remove(gifIds: Set<String>) {
-        if (gifIds.isNotEmpty()) _items.value = _items.value.filterNot { it.id in gifIds }
+        if (gifIds.isNotEmpty()) _items.update { items -> items.filterNot { it.id in gifIds } }
     }
 
     /** A new feed over the same source, shuffled a page at a time. */
@@ -85,8 +86,11 @@ class Feed(val source: FeedSource, private val loader: suspend (Int) -> GifPage)
                 val page = loader(nextPage)
                 nextPage++
                 if (_relatedTags.value.isEmpty()) _relatedTags.value = page.relatedTags
-                val known = _items.value.mapTo(HashSet()) { it.id }
-                _items.value += page.gifs.filter { known.add(it.id) }
+                // prepend and remove can run while a page loads, so add to whatever is there now.
+                _items.update { items ->
+                    val known = items.mapTo(HashSet()) { it.id }
+                    items + page.gifs.filter { known.add(it.id) }
+                }
                 if (nextPage > page.pages) _exhausted.value = true
                 if (page.gifs.isNotEmpty() || _exhausted.value) break
                 if (++skipped >= MAX_EMPTY_PAGES) {

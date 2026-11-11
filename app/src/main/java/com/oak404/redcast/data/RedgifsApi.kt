@@ -3,6 +3,7 @@ package com.oak404.redcast.data
 import android.net.Uri
 import com.oak404.redcast.auth.Session
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -120,7 +121,12 @@ class RedgifsApi(private val session: Session, private val http: OkHttpClient) {
         body: JSONObject? = null,
     ): JSONObject {
         val token = token(requiresUser)
-        val first = send(path, token, method, body)
+        var first = send(path, token, method, body)
+        // Rate limited: one more try if the site asks for only a short wait.
+        if (first.status == 429 && first.retryAfterSec in 0..MAX_RETRY_AFTER_SEC) {
+            delay(first.retryAfterSec.coerceAtLeast(1) * 1000L)
+            first = send(path, token, method, body)
+        }
         if (first.status != 401) return first.unwrap()
 
         // Expired or revoked: get a new token once, then let any second failure surface.
@@ -148,16 +154,24 @@ class RedgifsApi(private val session: Session, private val http: OkHttpClient) {
                 .method(method, body)
                 .build()
             http.newCall(request).execute().use { response ->
-                Reply(response.code, response.body?.string().orEmpty())
+                Reply(
+                    response.code,
+                    response.body?.string().orEmpty(),
+                    response.header("Retry-After")?.trim()?.toIntOrNull() ?: -1,
+                )
             }
         }
 
-    private class Reply(val status: Int, val text: String) {
+    /** [retryAfterSec] is the reply's Retry-After in seconds, or -1 without one. */
+    private class Reply(val status: Int, val text: String, val retryAfterSec: Int = -1) {
         fun unwrap(): JSONObject {
             val json = runCatching { JSONObject(text) }.getOrNull()
             if (status in 200..299) {
                 // An empty reply is fine for a like or a follow; one that isn't JSON at all is not.
                 return json ?: if (text.isBlank()) JSONObject() else throw ApiChangedException("replies")
+            }
+            if (status == 429) {
+                throw ApiException(status, "RateLimited", "RedGIFs is limiting requests. Try again in a minute.")
             }
             val error = json?.optJSONObject("error")
             throw ApiException(
@@ -172,6 +186,7 @@ class RedgifsApi(private val session: Session, private val http: OkHttpClient) {
         const val API_BASE = "https://api.redgifs.com"
         const val PAGE_SIZE = 40
         private const val MAX_SUGGESTIONS = 8
+        private const val MAX_RETRY_AFTER_SEC = 5
         private val JSON = "application/json".toMediaType()
     }
 }

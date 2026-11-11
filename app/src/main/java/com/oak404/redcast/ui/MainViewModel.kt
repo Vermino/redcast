@@ -338,6 +338,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun dismissApiChanged() = api.dismissChanged()
 
+    /** A listing that has clips on screen couldn't fetch its next page. */
+    fun onLoadMoreFailed(error: Throwable) {
+        _message.value = error.message ?: "Couldn't load more"
+    }
+
+
     /** Fetches the clips after [index] ahead of time: a few whole ones on Wi-Fi, the starts of two on data. */
     fun preloadAfter(gifs: List<Gif>, index: Int) {
         val metered = connectivity().isActiveNetworkMetered
@@ -350,12 +356,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun importFrom(uri: Uri) {
         viewModelScope.launch {
             _message.value = try {
-                val text = withContext(Dispatchers.IO) {
-                    val input = getApplication<Application>().contentResolver.openInputStream(uri)
-                        ?: throw IOException("Couldn't open that file")
-                    input.use { it.readBytes().decodeToString() }
+                val json = withContext(Dispatchers.IO) {
+                    val resolver = getApplication<Application>().contentResolver
+                    val size = resolver.openAssetFileDescriptor(uri, "r")?.use { it.length } ?: -1L
+                    if (size > MAX_IMPORT_BYTES) throw IOException("That file is too big to be a Redcast export")
+                    val input = resolver.openInputStream(uri) ?: throw IOException("Couldn't open that file")
+                    JSONObject(input.use { it.readBytes().decodeToString() })
                 }
-                val result = library.importJson(JSONObject(text))
+                val result = library.importJson(json)
                 refreshMix()
                 refreshNewClips(force = true)
                 result.summary
@@ -430,6 +438,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 update = null
             } catch (e: IOException) {
                 _message.value = e.message
+            } catch (e: RuntimeException) {
+                // No installer to hand the file to, or the file can't be shared with it.
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                _message.value = "Couldn't open the installer"
             } finally {
                 updateProgress = null
             }
@@ -508,9 +520,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val route = backStack.getOrNull(top) as? Route.Player ?: return
         if (route.feed === feed && route.startIndex != index) {
             backStack[top] = route.copy(startIndex = index)
-            feed.rememberScroll(index, 0)
+            // The grid leaves out hidden and muted clips, so its place for this clip is the
+            // number of clips before it that it still shows.
+            val taste = library.taste.value
+            feed.rememberScroll(feed.items.value.take(index).count { !taste.hidesByRule(it) }, 0)
         }
     }
+
 
     fun onPlayerClosed() {
         playerPosition = null
@@ -663,6 +679,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private companion object {
         const val UPDATE_CHECK_EVERY_MS = 12 * 60 * 60 * 1000L
+        /** Far more than any real export: a few thousand clips come to a couple of MB. */
+        const val MAX_IMPORT_BYTES = 32L * 1024 * 1024
         const val CREATOR_ORDER = "latest"
         const val MAX_FOLLOWING_PAGES = 10
         const val SEED_LIKES = 80

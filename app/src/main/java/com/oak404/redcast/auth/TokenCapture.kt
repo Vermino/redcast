@@ -73,24 +73,41 @@ object TokenCapture {
 
         val userToken = CompletableDeferred<String>()
         var sawGuestToken = false
+        var pageLoaded = false
         val webView = WebView(context)
-        webView.webViewClient = WebViewClient()
-        install(webView) { token ->
-            val jwt = Jwt.parse(token)
-            when {
-                jwt?.isUser == true -> userToken.complete(token)
-                jwt != null -> sawGuestToken = true
+        try {
+            webView.webViewClient = object : WebViewClient() {
+                override fun onPageFinished(view: WebView?, url: String?) {
+                    pageLoaded = true
+                }
             }
-        }
-        webView.layout(0, 0, 1080, 1920)
-        webView.loadUrl(SITE)
+            install(webView) { token ->
+                val jwt = Jwt.parse(token)
+                when {
+                    jwt?.isUser == true -> userToken.complete(token)
+                    jwt != null -> sawGuestToken = true
+                }
+            }
+            webView.layout(0, 0, 1080, 1920)
+            webView.loadUrl(SITE)
 
-        val token = withTimeoutOrNull(RENEW_TIMEOUT_MS) { userToken.await() }
-        webView.destroy()
-        when {
-            token != null -> Renewal.Renewed(token)
-            sawGuestToken -> Renewal.SessionEnded
-            else -> Renewal.Failed
+            val token = withTimeoutOrNull(RENEW_TIMEOUT_MS) { userToken.await() }
+            renewalOutcome(token, sawGuestToken, pageLoaded)
+        } finally {
+            // Also when the caller gives up while waiting: a WebView left alive keeps the site running.
+            webView.destroy()
         }
     }
+
+    /**
+     * What a renewal attempt came to. The session only counts as over when the site finished
+     * loading and still spoke as a guest: on a slow connection its first requests can be a
+     * guest's while the page is still coming in, and signing out for that would be wrong.
+     */
+    internal fun renewalOutcome(userToken: String?, sawGuestToken: Boolean, pageLoaded: Boolean): Renewal = when {
+        userToken != null -> Renewal.Renewed(userToken)
+        sawGuestToken && pageLoaded -> Renewal.SessionEnded
+        else -> Renewal.Failed
+    }
+
 }

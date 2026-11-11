@@ -50,7 +50,7 @@ import kotlin.math.abs
 /** The list layout: the card nearest the middle of the screen plays muted, in place. */
 @OptIn(UnstableApi::class)
 @Composable
-fun InlineList(viewModel: MainViewModel, feed: Feed, gifs: List<Gif>, state: LazyListState) {
+fun InlineList(viewModel: MainViewModel, feed: Feed, gifs: List<IndexedValue<Gif>>, state: LazyListState) {
     val context = LocalContext.current
     val deviceName by viewModel.cast.deviceName.collectAsStateWithLifecycle()
     val lifecycleState by LocalLifecycleOwner.current.lifecycle.currentStateAsState()
@@ -76,7 +76,7 @@ fun InlineList(viewModel: MainViewModel, feed: Feed, gifs: List<Gif>, state: Laz
     LaunchedEffect(player, active) {
         // A fling passes over many cards, and only the one it stops on should load.
         delay(SETTLE_MS)
-        val gif = currentGifs.getOrNull(active) ?: return@LaunchedEffect
+        val gif = currentGifs.getOrNull(active)?.value ?: return@LaunchedEffect
         player.setMediaItem(MediaItem.Builder().setUri(viewModel.playbackUrl(gif)).setMediaId(gif.id).build())
         player.prepare()
     }
@@ -90,14 +90,16 @@ fun InlineList(viewModel: MainViewModel, feed: Feed, gifs: List<Gif>, state: Laz
         verticalArrangement = Arrangement.spacedBy(8.dp),
         modifier = Modifier.fillMaxSize(),
     ) {
-        itemsIndexed(gifs, key = { _, gif -> gif.id }) { index, gif ->
+        // [place] is the card's place on screen; [feedIndex] its place in the feed, which is what
+        // the player opens at. They differ once a clip in between is hidden or muted.
+        itemsIndexed(gifs, key = { _, item -> item.value.id }) { place, (feedIndex, gif) ->
             Column {
                 Box(
                     Modifier
                         .fillMaxWidth()
                         .aspectRatio(gif.aspectRatio)
                         .background(Color.Black)
-                        .clickable { viewModel.openGif(feed, index) },
+                        .clickable { viewModel.openGif(feed, feedIndex) },
                 ) {
                     AsyncImage(
                         model = gif.posterUrl,
@@ -105,7 +107,8 @@ fun InlineList(viewModel: MainViewModel, feed: Feed, gifs: List<Gif>, state: Laz
                         contentScale = ContentScale.Fit,
                         modifier = Modifier.fillMaxSize(),
                     )
-                    if (index == active && !casting) {
+                    if (place == active && !casting) {
+
                         AndroidView(
                             factory = {
                                 LayoutInflater.from(it).inflate(R.layout.player_view, null) as PlayerView

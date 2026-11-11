@@ -2,6 +2,8 @@ package com.oak404.redcast.cast
 
 import android.content.Context
 import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+
 import android.net.Uri
 import android.util.Log
 import com.google.android.gms.cast.MediaInfo
@@ -48,7 +50,9 @@ class CastController(
     private val _nowPlaying = MutableStateFlow<NowPlaying?>(null)
     val nowPlaying: StateFlow<NowPlaying?> = _nowPlaying.asStateFlow()
 
+    private var relayAddress: InetAddress? = null
     private val _problem = MutableStateFlow<String?>(null)
+
 
     /** Why casting stopped, shown to the user until the next attempt. */
     val problem: StateFlow<String?> = _problem.asStateFlow()
@@ -137,7 +141,15 @@ class CastController(
         client?.registerCallback(mediaCallback)
         val device = session.castDevice?.friendlyName ?: "TV"
         _deviceName.value = device
-        networkAddress()?.let { address ->
+        val address = networkAddress()
+        if (address == null) {
+            // Without the relay the TV asks the media host itself and is refused, which would
+            // only show up later as clips that won't play.
+            _problem.value = "Connect this phone to the same Wi-Fi as the TV to cast"
+        } else {
+            // A session picked up again after the Wi-Fi changed needs the relay at the new address.
+            if (address != relayAddress) relay.stop()
+            relayAddress = address
             runCatching { relay.start(address) }.onFailure { Log.w(TAG, "Relay failed to start", it) }
         }
         CastKeepAliveService.start(context, device)
@@ -275,11 +287,24 @@ class CastController(
 
     private fun relayed(url: String) = relay.relayUrl(url) ?: url
 
-    /** This phone's address on its local network, which is where the receiver has to reach it. */
+    /**
+     * This phone's address on its local network, which is where the receiver has to reach it.
+     * Wi-Fi itself comes first: with a VPN up the active network is the tunnel, whose address the
+     * receiver can't reach, and a mobile network can hand out a local-looking address too.
+     */
+    @Suppress("DEPRECATION") // allNetworks: a one-off read, no callback to keep registered.
     private fun networkAddress(): InetAddress? {
         val network = context.getSystemService(ConnectivityManager::class.java)
-        val links = network.getLinkProperties(network.activeNetwork) ?: return null
-        return links.linkAddresses.map { it.address }
+        fun local(candidate: android.net.Network): Boolean {
+            val caps = network.getNetworkCapabilities(candidate) ?: return false
+            return !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) &&
+                (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) || caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET))
+        }
+        val all = (listOfNotNull(network.activeNetwork) + network.allNetworks).distinct()
+        return (all.filter(::local) + all.filterNot(::local)).asSequence()
+            .mapNotNull { network.getLinkProperties(it) }
+
+            .flatMap { links -> links.linkAddresses.map { it.address } }
             .firstOrNull { it is Inet4Address && it.isSiteLocalAddress }
     }
 
